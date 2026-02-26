@@ -1,0 +1,23 @@
+# dependencies
+node_modules/
+
+# next.js
+.next/
+out/
+
+# env
+.env.local
+
+# runtime output
+tmp/
+logs/
+output_markdown/
+
+# build cache
+tsconfig.tsbuildinfo
+
+# claude
+.claude/
+
+# OS
+.DS_Store
