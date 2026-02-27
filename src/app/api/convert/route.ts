@@ -4,6 +4,7 @@ import path from "path";
 import { convertPdfToMarkdown, cleanupTempFiles } from "@/lib/marker";
 import { convertMarkdownToNotionBlocks, extractTitleFromMarkdown, replaceImageBlocks, preprocessMarkdownImages, normalizeCodeBlockIndentation } from "@/lib/converter";
 import { extractImagesWithPyMuPDF, insertImageReferences, stripPageSeparators } from "@/lib/image-extractor";
+import { extractTableLinksFromPDF, injectTableLinks } from "@/lib/table-link-injector";
 import { createNotionClient, createNotionPage } from "@/lib/notion";
 import { uploadImages } from "@/lib/image-uploader";
 import { ConvertLogger } from "@/lib/logger";
@@ -115,6 +116,18 @@ export async function POST(request: NextRequest) {
             `PyMuPDF 이미지 추출 실패, 이미지 없이 진행: ${pymuPdfError instanceof Error ? pymuPdfError.message : "알 수 없는 오류"}`
           );
           markdownWithImages = stripPageSeparators(paginatedMarkdown);
+        }
+
+        // 2.6. 테이블 내 하이퍼링크 복원
+        try {
+          const tableLinkData = await extractTableLinksFromPDF(pdfPath, log);
+          if (tableLinkData.tables.length > 0) {
+            markdownWithImages = injectTableLinks(markdownWithImages, tableLinkData.tables, log);
+          }
+        } catch (tableLinkError) {
+          log.warn(
+            `테이블 링크 추출 실패, 링크 없이 진행: ${tableLinkError instanceof Error ? tableLinkError.message : "알 수 없는 오류"}`
+          );
         }
 
         // 2.7. 코드 블록 들여쓰기 정규화 (Marker가 축소한 들여쓰기를 4칸으로 복원)
