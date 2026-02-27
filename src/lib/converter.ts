@@ -100,9 +100,9 @@ function normalizeIndentation(lines: string[]): {
     }
   }
 
-  // 들여쓰기가 있는 라인이 없으면 변경 불필요
+  // 들여쓰기가 있는 라인이 없으면 중괄호/대괄호 기반 자동 들여쓰기 시도
   if (indents.length === 0) {
-    return { lines, changed: false };
+    return reindentByBrackets(lines);
   }
 
   // 2. 최소 들여쓰기 단위 (indent unit) 파악
@@ -137,6 +137,58 @@ function normalizeIndentation(lines: string[]): {
   });
 
   return { lines: scaledLines, changed: true };
+}
+
+/**
+ * 중괄호/대괄호 기반 자동 들여쓰기.
+ *
+ * Marker가 코드 블록의 모든 들여쓰기를 제거한 경우(0-indent)에 사용된다.
+ * JSON이나 중괄호 기반 코드(Swift, Java 등)에서 { } [ ] 의 중첩 깊이로
+ * 들여쓰기를 복원한다.
+ *
+ * 대상: 중괄호 또는 대괄호가 2쌍 이상 있는 코드 블록만 처리.
+ * (단순 텍스트에 우연히 포함된 중괄호에 오작동하지 않도록)
+ */
+function reindentByBrackets(lines: string[]): {
+  lines: string[];
+  changed: boolean;
+} {
+  // 중괄호/대괄호 쌍 개수 확인
+  const fullText = lines.join("\n");
+  const openCount = (fullText.match(/[{[]/g) || []).length;
+  const closeCount = (fullText.match(/[}\]]/g) || []).length;
+
+  // 최소 2쌍 이상이어야 의미 있는 중첩 구조로 간주
+  if (openCount < 2 || closeCount < 2) {
+    return { lines, changed: false };
+  }
+
+  let depth = 0;
+  const result: string[] = [];
+
+  for (const rawLine of lines) {
+    const trimmed = rawLine.trim();
+    if (trimmed.length === 0) {
+      result.push("");
+      continue;
+    }
+
+    // 닫는 괄호로 시작하면 먼저 depth 감소
+    if (/^[}\]]/.test(trimmed)) {
+      depth = Math.max(0, depth - 1);
+    }
+
+    result.push(" ".repeat(depth * TARGET_INDENT_SIZE) + trimmed);
+
+    // 여는 괄호로 끝나면 depth 증가 (같은 줄에 닫는 괄호가 있으면 상쇄)
+    const opens = (trimmed.match(/[{[]/g) || []).length;
+    const closes = (trimmed.match(/[}\]]/g) || []).length;
+    // 줄 시작의 닫는 괄호는 이미 위에서 처리했으므로, 나머지 변화량만 반영
+    const netChange = opens - closes + (/^[}\]]/.test(trimmed) ? 1 : 0);
+    depth = Math.max(0, depth + netChange);
+  }
+
+  return { lines: result, changed: true };
 }
 
 /** 양의 정수 배열의 최대공약수를 구한다. */
