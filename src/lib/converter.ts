@@ -380,13 +380,57 @@ export function flattenNestedOrderedLists(
   return result;
 }
 
+/**
+ * Notion API는 `#anchor` 같은 내부 링크를 유효한 URL로 인정하지 않는다.
+ * Marker가 PDF 내부 페이지 참조를 `[text](#page-0-0)` 형태로 변환하는데,
+ * Martian이 이를 Notion link annotation으로 변환하면 API에서
+ * "Invalid URL for link" 에러가 발생한다.
+ *
+ * 이 함수는:
+ * 1. `[text](#...)` 형태의 내부 앵커 링크를 plain text로 변환한다.
+ * 2. `<span id="..."></span>` HTML 앵커 태그를 제거한다.
+ */
+export function sanitizeInternalLinks(
+  markdown: string,
+  log: ConvertLogger
+): string {
+  let anchorLinkCount = 0;
+  let spanCount = 0;
+
+  // 1. [text](#anchor) → text
+  //    링크 텍스트에 \[ \] \( \) 등 이스케이프된 문자가 포함될 수 있으므로
+  //    \\. 패턴으로 이스케이프 시퀀스를 건너뛴다.
+  let result = markdown.replace(
+    /\[((?:[^\]\\]|\\.)+)\]\(#[^)]*\)/g,
+    (_match, text: string) => {
+      anchorLinkCount++;
+      return text;
+    }
+  );
+
+  // 2. <span id="..."></span> → (제거)
+  result = result.replace(/<span\s+id="[^"]*">\s*<\/span>/g, () => {
+    spanCount++;
+    return "";
+  });
+
+  if (anchorLinkCount > 0 || spanCount > 0) {
+    log.info(
+      `내부 링크 정리: 앵커 링크 ${anchorLinkCount}개 → plain text, <span> 태그 ${spanCount}개 제거`
+    );
+  }
+
+  return result;
+}
+
 export function convertMarkdownToNotionBlocks(
   markdown: string,
   log: ConvertLogger
 ): PreparedBlocks {
   log.section("Markdown → Notion Blocks 변환 (Martian)");
 
-  const blocks = markdownToBlocks(flattenNestedOrderedLists(markdown, log), {
+  const sanitized = sanitizeInternalLinks(markdown, log);
+  const blocks = markdownToBlocks(flattenNestedOrderedLists(sanitized, log), {
     notionLimits: {
       truncate: true,
     },
