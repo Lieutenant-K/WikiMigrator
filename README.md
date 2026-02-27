@@ -50,7 +50,17 @@ marker_single --help
 
 > GPU가 있으면 변환 속도가 크게 향상됩니다. CPU만으로도 동작합니다.
 
-### 3. Notion Integration 생성
+### 3. PyMuPDF (이미지 추출)
+
+PDF에서 원본 이미지를 추출하기 위해 PyMuPDF가 필요합니다.
+
+```bash
+pip install pymupdf
+```
+
+> Marker와 동일한 Python 환경에 설치하면 됩니다.
+
+### 4. Notion Integration 생성
 
 1. [notion.so/my-integrations](https://www.notion.so/my-integrations)에 접속합니다.
 2. **새 Integration**을 생성합니다.

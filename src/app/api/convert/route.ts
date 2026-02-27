@@ -3,6 +3,7 @@ import { promises as fs } from "fs";
 import path from "path";
 import { convertPdfToMarkdown, cleanupTempFiles } from "@/lib/marker";
 import { convertMarkdownToNotionBlocks, extractTitleFromMarkdown, replaceImageBlocks, preprocessMarkdownImages, normalizeCodeBlockIndentation } from "@/lib/converter";
+import { extractImagesWithPyMuPDF, insertImageReferences, stripPageSeparators } from "@/lib/image-extractor";
 import { createNotionClient, createNotionPage } from "@/lib/notion";
 import { uploadImages } from "@/lib/image-uploader";
 import { ConvertLogger } from "@/lib/logger";
@@ -89,12 +90,36 @@ export async function POST(request: NextRequest) {
         savedFiles.push(pdfPath);
         log.info(`임시 파일 저장: ${pdfPath}`);
 
-        // 2. Marker로 PDF → Markdown 변환
-        const { markdown: rawMarkdown, imageMap } = await convertPdfToMarkdown(pdfPath, log);
+        // 2. Marker로 PDF → Markdown 변환 (이미지 추출 비활성화, 페이지 구분자 활성화)
+        const { markdown: paginatedMarkdown } = await convertPdfToMarkdown(pdfPath, log);
 
-        // 2-0.5. 코드 블록 들여쓰기 정규화 (Marker가 축소한 들여쓰기를 4칸으로 복원)
+        // 2.5. PyMuPDF로 원본 이미지 추출 + 마크다운에 이미지 참조 삽입
+        let imageMap = new Map<string, string>();
+        let markdownWithImages = paginatedMarkdown;
+
+        try {
+          const { metadata, imageMap: pymuPdfImageMap } = await extractImagesWithPyMuPDF(pdfPath, log);
+          imageMap = pymuPdfImageMap;
+
+          if (metadata.images.length > 0) {
+            markdownWithImages = insertImageReferences(
+              paginatedMarkdown, metadata.images, log,
+              metadata.page_text_blocks, metadata.page_heights
+            );
+          } else {
+            markdownWithImages = stripPageSeparators(paginatedMarkdown);
+            log.info("PyMuPDF에서 추출된 이미지 없음");
+          }
+        } catch (pymuPdfError) {
+          log.warn(
+            `PyMuPDF 이미지 추출 실패, 이미지 없이 진행: ${pymuPdfError instanceof Error ? pymuPdfError.message : "알 수 없는 오류"}`
+          );
+          markdownWithImages = stripPageSeparators(paginatedMarkdown);
+        }
+
+        // 2.7. 코드 블록 들여쓰기 정규화 (Marker가 축소한 들여쓰기를 4칸으로 복원)
         log.section("코드 블록 들여쓰기 정규화");
-        const markdown = normalizeCodeBlockIndentation(rawMarkdown, log);
+        const markdown = normalizeCodeBlockIndentation(markdownWithImages, log);
 
         // 2-1. 변환된 Markdown을 .md 파일로 저장
         await fs.mkdir(MD_OUTPUT_DIR, { recursive: true });
@@ -165,7 +190,7 @@ export async function POST(request: NextRequest) {
     try {
       const entries = await fs.readdir(TMP_DIR);
       for (const entry of entries) {
-        if (entry.startsWith("output_")) {
+        if (entry.startsWith("output_") || entry.startsWith("pymupdf_")) {
           await cleanupTempFiles(path.join(TMP_DIR, entry));
         }
       }
