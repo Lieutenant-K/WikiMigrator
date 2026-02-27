@@ -5,6 +5,7 @@ import { convertPdfToMarkdown, cleanupTempFiles } from "@/lib/marker";
 import { convertMarkdownToNotionBlocks, extractTitleFromMarkdown, replaceImageBlocks, preprocessMarkdownImages, normalizeCodeBlockIndentation } from "@/lib/converter";
 import { extractImagesWithPyMuPDF, insertImageReferences, stripPageSeparators } from "@/lib/image-extractor";
 import { extractTableLinksFromPDF, injectTableLinks } from "@/lib/table-link-injector";
+import { extractBulletsFromPDF, restoreBulletMarkers } from "@/lib/bullet-restorer";
 import { createNotionClient, createNotionPage } from "@/lib/notion";
 import { uploadImages } from "@/lib/image-uploader";
 import { ConvertLogger } from "@/lib/logger";
@@ -127,6 +128,18 @@ export async function POST(request: NextRequest) {
         } catch (tableLinkError) {
           log.warn(
             `테이블 링크 추출 실패, 링크 없이 진행: ${tableLinkError instanceof Error ? tableLinkError.message : "알 수 없는 오류"}`
+          );
+        }
+
+        // 2.65. 벡터 불릿 복원 (PyMuPDF get_drawings()로 감지된 벡터 마커 → 마크다운 리스트 복원)
+        try {
+          const bulletData = await extractBulletsFromPDF(pdfPath, log);
+          if (bulletData.bullets.length > 0) {
+            markdownWithImages = restoreBulletMarkers(markdownWithImages, bulletData.bullets, log);
+          }
+        } catch (bulletError) {
+          log.warn(
+            `벡터 불릿 복원 실패, 불릿 없이 진행: ${bulletError instanceof Error ? bulletError.message : "알 수 없는 오류"}`
           );
         }
 
