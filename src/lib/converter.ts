@@ -350,13 +350,43 @@ export interface PreparedBlocks {
   deferredAppends: DeferredAppend[];
 }
 
+/**
+ * 불릿 리스트 내부의 순서형 번호 패턴(`- 1. text`)을 순서형 리스트로 변환한다.
+ *
+ * CommonMark에서 `- 1. text`는 bulleted_list > ordered_list 중첩 구조로 파싱된다.
+ * Martian은 이 중첩 구조를 제대로 변환하지 못해 목록 항목이 통째로 누락된다.
+ *
+ * 수정: `- 1. text` → `1. text` (불릿 마커를 제거하여 순서형 리스트로 변환)
+ */
+export function flattenNestedOrderedLists(
+  markdown: string,
+  log: ConvertLogger
+): string {
+  let count = 0;
+  const result = markdown.replace(
+    /^- +(\d+\. )/gm,
+    (_match, ordered: string) => {
+      count++;
+      return ordered;
+    }
+  );
+
+  if (count > 0) {
+    log.info(
+      `불릿-순서형 중첩 패턴 정규화: ${count}개 항목의 "- N." → "N." 변환`
+    );
+  }
+
+  return result;
+}
+
 export function convertMarkdownToNotionBlocks(
   markdown: string,
   log: ConvertLogger
 ): PreparedBlocks {
   log.section("Markdown → Notion Blocks 변환 (Martian)");
 
-  const blocks = markdownToBlocks(markdown, {
+  const blocks = markdownToBlocks(flattenNestedOrderedLists(markdown, log), {
     notionLimits: {
       truncate: true,
     },
