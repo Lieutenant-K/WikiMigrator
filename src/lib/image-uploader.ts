@@ -95,6 +95,62 @@ async function uploadSingleImage(
 }
 
 /**
+ * PDF 파일 버퍼를 Notion에 업로드하고 file_upload ID를 반환한다.
+ */
+export async function uploadPdfToNotion(
+  client: Client,
+  pdfBuffer: Buffer,
+  filename: string,
+  log: ConvertLogger
+): Promise<string> {
+  const contentType = "application/pdf";
+  const fileSize = formatFileSize(pdfBuffer.length);
+
+  log.section("PDF 원본 업로드");
+  log.info(`  [create] ${filename} (${fileSize}, ${contentType})`);
+
+  const fileUpload = await client.fileUploads.create({
+    mode: "single_part",
+    filename,
+    content_type: contentType,
+  });
+
+  log.info(`  [create] 완료 → id=${fileUpload.id}, status=${fileUpload.status}`);
+
+  const blob = new Blob([new Uint8Array(pdfBuffer)], { type: contentType });
+
+  log.info(`  [send] 파일 전송 중... (${fileSize})`);
+
+  const sendResponse = await client.fileUploads.send({
+    file_upload_id: fileUpload.id,
+    file: {
+      filename,
+      data: blob,
+    },
+  });
+
+  log.info(`  [send] 완료 → status=${sendResponse.status}`);
+
+  const verified = await client.fileUploads.retrieve({
+    file_upload_id: fileUpload.id,
+  });
+
+  if (verified.status !== "uploaded") {
+    const msg = `PDF 업로드 상태 이상: status=${verified.status} (expected: uploaded)`;
+    log.error(`  [verify] ${msg}`);
+    throw new Error(msg);
+  }
+
+  log.info(
+    `  [verify] 확인 완료 → status=${verified.status}, ` +
+    `content_length=${verified.content_length ?? "null"}, ` +
+    `expiry_time=${verified.expiry_time ?? "null"}`
+  );
+
+  return fileUpload.id;
+}
+
+/**
  * 여러 이미지를 Notion에 업로드하고,
  * 마크다운에서 참조하는 상대 경로 → file_upload ID 매핑을 반환한다.
  */
