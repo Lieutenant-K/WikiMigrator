@@ -301,19 +301,81 @@ function interpolateLineIndex(
 }
 
 /**
- * 삽입 대상 줄이 마크다운 테이블 내부인지 확인하고,
- * 테이블 내부라면 테이블 종료 직후의 줄 인덱스를 반환한다.
+ * 마크다운 lines에서 삽입 불가 범위(코드 펜스, 테이블)를 일괄 계산한다.
+ * 반환된 각 범위의 [start, end]는 inclusive이며, 이 범위 내부에는 이미지를 삽입하면 안 된다.
+ *
+ * 블록 타입별 개별 보호 로직(adjustForTable, adjustForCodeBlock 등)을 추가하는 대신,
+ * 이 함수 하나로 모든 블록 구조를 통합 관리한다.
  */
-function adjustForTable(lines: string[], targetIndex: number): number {
-  if (targetIndex < 0 || targetIndex >= lines.length) return targetIndex;
-  if (!lines[targetIndex].trimStart().startsWith("|")) return targetIndex;
+function computeBlockRanges(lines: string[]): Array<{ start: number; end: number }> {
+  const ranges: Array<{ start: number; end: number }> = [];
+  let insideCodeFence = false;
+  let codeFenceStart = -1;
+  let tableStart = -1;
 
-  let endIndex = targetIndex;
-  while (endIndex < lines.length && lines[endIndex].trimStart().startsWith("|")) {
-    endIndex++;
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i].trimStart();
+
+    // 코드 펜스 토글 (``` 이상)
+    if (/^`{3,}/.test(trimmed)) {
+      if (!insideCodeFence) {
+        // 테이블이 열려있으면 코드 펜스 전에 닫기
+        if (tableStart !== -1) {
+          ranges.push({ start: tableStart, end: i - 1 });
+          tableStart = -1;
+        }
+        codeFenceStart = i;
+        insideCodeFence = true;
+      } else {
+        ranges.push({ start: codeFenceStart, end: i });
+        insideCodeFence = false;
+      }
+      continue;
+    }
+
+    if (insideCodeFence) continue;
+
+    // 테이블 연속 범위 감지
+    if (trimmed.startsWith("|")) {
+      if (tableStart === -1) tableStart = i;
+    } else {
+      if (tableStart !== -1) {
+        ranges.push({ start: tableStart, end: i - 1 });
+        tableStart = -1;
+      }
+    }
   }
 
-  return endIndex;
+  // 닫히지 않은 블록 처리
+  if (insideCodeFence) {
+    ranges.push({ start: codeFenceStart, end: lines.length - 1 });
+  }
+  if (tableStart !== -1) {
+    ranges.push({ start: tableStart, end: lines.length - 1 });
+  }
+
+  return ranges;
+}
+
+/**
+ * target index가 삽입 불가 범위 내부에 있으면 가장 가까운 범위 바깥으로 snap한다.
+ * 범위 밖이면 그대로 반환한다.
+ */
+function snapToSafePoint(
+  target: number,
+  blockRanges: Array<{ start: number; end: number }>,
+  totalLines: number
+): number {
+  for (const range of blockRanges) {
+    if (target >= range.start && target <= range.end) {
+      const distBefore = target - range.start;
+      const distAfter = range.end + 1 - target;
+      return distBefore <= distAfter
+        ? range.start
+        : Math.min(range.end + 1, totalLines);
+    }
+  }
+  return target;
 }
 
 /**
@@ -418,6 +480,15 @@ export function insertImageReferences(
       );
     }
 
+    // 삽입 불가 범위를 섹션당 1회 계산 (코드 펜스, 테이블 등)
+    const blockRanges = computeBlockRanges(lines);
+    if (blockRanges.length > 0) {
+      log.info(
+        `  페이지 ${section.pageNumber}: 삽입 불가 범위 ${blockRanges.length}개 ` +
+        `(${blockRanges.map(r => `[${r.start}-${r.end}]`).join(", ")})`
+      );
+    }
+
     // 이미지를 y_position 역순으로 처리 (뒤에서부터 삽입해야 인덱스가 안 밀림)
     const sortedImages = [...pageImages].sort((a, b) => b.y_position - a.y_position);
 
@@ -440,7 +511,7 @@ export function insertImageReferences(
         if (matchedCp) {
           adjustedIndex = rawIndex + 1;
         }
-        insertionIndex = adjustForTable(lines, adjustedIndex);
+        insertionIndex = snapToSafePoint(adjustedIndex, blockRanges, lines.length);
 
         log.info(
           `  페이지 ${img.page}: "${img.filename}" → 보간 삽입 ` +
@@ -449,7 +520,7 @@ export function insertImageReferences(
           `${matchedCp ? `, +1 보정(cp.y=${matchedCp.y})` : ""})`
         );
         if (insertionIndex !== adjustedIndex) {
-          log.info(`    → 테이블 회피: line ${adjustedIndex} → ${insertionIndex}`);
+          log.info(`    → 블록 회피: line ${adjustedIndex} → ${insertionIndex}`);
         }
         matchedCount++;
       } else {
@@ -457,13 +528,17 @@ export function insertImageReferences(
         const lineIndex = findAnchorLineIndex(lines, img.anchor_text);
 
         if (lineIndex >= 0) {
-          insertionIndex = img.anchor_position === "below"
+          const anchorIndex = img.anchor_position === "below"
             ? lineIndex
             : lineIndex + 1;
+          insertionIndex = snapToSafePoint(anchorIndex, blockRanges, lines.length);
           matchedCount++;
           log.info(
             `  페이지 ${img.page}: "${img.filename}" → anchor 매칭 (line ${lineIndex})`
           );
+          if (insertionIndex !== anchorIndex) {
+            log.info(`    → 블록 회피: line ${anchorIndex} → ${insertionIndex}`);
+          }
         } else {
           insertionIndex = lines.length;
           fallbackCount++;
