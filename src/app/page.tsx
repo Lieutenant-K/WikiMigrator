@@ -1,6 +1,8 @@
 "use client";
 
 import { useState, useCallback, useRef } from "react";
+import Link from "next/link";
+import FileViewer from "@/components/FileViewer";
 
 interface NotionPage {
   id: string;
@@ -13,6 +15,39 @@ interface ConvertResult {
   status: "success" | "error";
   pageId?: string;
   error?: string;
+  logFile?: string;
+  mdFile?: string;
+}
+
+type StreamEvent =
+  | {
+      type: "progress";
+      fileIndex: number;
+      fileName: string;
+      step: string;
+      stepIndex: number;
+      totalSteps: number;
+      message: string;
+    }
+  | {
+      type: "result";
+      fileIndex: number;
+      fileName: string;
+      status: "success" | "error";
+      pageId?: string;
+      error?: string;
+      logFile?: string;
+      mdFile?: string;
+    }
+  | { type: "done" };
+
+interface FileProgress {
+  fileName: string;
+  stepIndex: number;
+  totalSteps: number;
+  stepName: string;
+  message: string;
+  result?: ConvertResult;
 }
 
 const TOKEN_STORAGE_KEY = "notion_token";
@@ -40,7 +75,14 @@ export default function Home() {
   const [loadingPages, setLoadingPages] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [connectingToken, setConnectingToken] = useState(false);
+  const [viewingFile, setViewingFile] = useState<{ resultIndex: number; type: "log" | "markdown" } | null>(null);
+  const [viewerContent, setViewerContent] = useState("");
+  const [viewerLoading, setViewerLoading] = useState(false);
+  const [fileProgresses, setFileProgresses] = useState<FileProgress[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const convertedFilesRef = useRef<File[]>([]);
+  const [retryingIndex, setRetryingIndex] = useState<number | null>(null);
+  const [attachPdf, setAttachPdf] = useState(false);
 
   const fetchPages = useCallback(
     async (accessToken: string) => {
@@ -111,6 +153,7 @@ export default function Home() {
     setPages([]);
     setSelectedPage("");
     setResults([]);
+    setFileProgresses([]);
     localStorage.removeItem(TOKEN_STORAGE_KEY);
   };
 
@@ -145,10 +188,25 @@ export default function Home() {
     setConverting(true);
     setResults([]);
     setError("");
+    setViewingFile(null);
+    setViewerContent("");
+
+    // 파일별 진행 상태 초기화
+    const totalSteps = attachPdf ? 11 : 10;
+    const initialProgresses: FileProgress[] = files.map((f) => ({
+      fileName: f.name,
+      stepIndex: -1,
+      totalSteps,
+      stepName: "",
+      message: "대기 중",
+    }));
+    setFileProgresses(initialProgresses);
+    convertedFilesRef.current = [...files];
 
     try {
       const formData = new FormData();
       formData.append("parentPageId", selectedPage);
+      formData.append("attachPdf", String(attachPdf));
       files.forEach((file) => formData.append("files", file));
 
       const res = await fetch("/api/convert", {
@@ -157,19 +215,269 @@ export default function Home() {
         body: formData,
       });
 
-      const data = await res.json();
+      if (!res.ok) {
+        const data = await res.json();
+        setError(data.error || "변환 중 오류가 발생했습니다.");
+        setFileProgresses([]);
+        setConverting(false);
+        return;
+      }
 
-      if (data.error) {
-        setError(data.error);
-      } else if (data.results) {
-        setResults(data.results);
-        setFiles([]);
+      const reader = res.body!.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      const collectedResults: ConvertResult[] = [];
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+
+        const parts = buffer.split("\n\n");
+        buffer = parts.pop() || "";
+
+        for (const part of parts) {
+          const line = part.trim();
+          if (!line.startsWith("data: ")) continue;
+
+          const json = line.slice(6);
+          let event: StreamEvent;
+          try {
+            event = JSON.parse(json);
+          } catch {
+            continue;
+          }
+
+          if (event.type === "progress") {
+            setFileProgresses((prev) => {
+              const next = [...prev];
+              if (next[event.fileIndex]) {
+                next[event.fileIndex] = {
+                  ...next[event.fileIndex],
+                  stepIndex: event.stepIndex,
+                  totalSteps: event.totalSteps,
+                  stepName: event.step,
+                  message: event.message,
+                };
+              }
+              return next;
+            });
+          } else if (event.type === "result") {
+            const result: ConvertResult = {
+              fileName: event.fileName,
+              status: event.status,
+              pageId: event.pageId,
+              error: event.error,
+              logFile: event.logFile,
+              mdFile: event.mdFile,
+            };
+            collectedResults.push(result);
+            setResults([...collectedResults]);
+
+            setFileProgresses((prev) => {
+              const next = [...prev];
+              if (next[event.fileIndex]) {
+                next[event.fileIndex] = {
+                  ...next[event.fileIndex],
+                  stepIndex: next[event.fileIndex].totalSteps,
+                  message: event.status === "success" ? "완료" : "실패",
+                  result,
+                };
+              }
+              return next;
+            });
+          } else if (event.type === "done") {
+            setFiles([]);
+          }
+        }
       }
     } catch {
       setError("변환 중 오류가 발생했습니다.");
     } finally {
       setConverting(false);
     }
+  };
+
+  const handleRetry = async (uiIndex: number) => {
+    const file = convertedFilesRef.current[uiIndex];
+    if (!file || !selectedPage || !token) return;
+
+    if (viewingFile?.resultIndex === uiIndex) {
+      setViewingFile(null);
+      setViewerContent("");
+    }
+
+    setRetryingIndex(uiIndex);
+    const totalSteps = attachPdf ? 11 : 10;
+    setFileProgresses((prev) => {
+      const next = [...prev];
+      next[uiIndex] = {
+        fileName: file.name,
+        stepIndex: -1,
+        totalSteps,
+        stepName: "",
+        message: "재시도 대기 중...",
+        result: undefined,
+      };
+      return next;
+    });
+
+    try {
+      const formData = new FormData();
+      formData.append("parentPageId", selectedPage);
+      formData.append("attachPdf", String(attachPdf));
+      formData.append("files", file);
+
+      const res = await fetch("/api/convert", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        body: formData,
+      });
+
+      if (!res.ok) {
+        const data = await res.json();
+        setFileProgresses((prev) => {
+          const next = [...prev];
+          next[uiIndex] = {
+            ...next[uiIndex],
+            message: "재시도 실패",
+            result: {
+              fileName: file.name,
+              status: "error",
+              error: data.error || "재시도 중 오류가 발생했습니다.",
+            },
+          };
+          return next;
+        });
+        return;
+      }
+
+      const reader = res.body!.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const parts = buffer.split("\n\n");
+        buffer = parts.pop() || "";
+
+        for (const part of parts) {
+          const line = part.trim();
+          if (!line.startsWith("data: ")) continue;
+
+          let event: StreamEvent;
+          try {
+            event = JSON.parse(line.slice(6));
+          } catch {
+            continue;
+          }
+
+          if (event.type === "progress") {
+            setFileProgresses((prev) => {
+              const next = [...prev];
+              if (next[uiIndex]) {
+                next[uiIndex] = {
+                  ...next[uiIndex],
+                  stepIndex: event.stepIndex,
+                  totalSteps: event.totalSteps,
+                  stepName: event.step,
+                  message: event.message,
+                };
+              }
+              return next;
+            });
+          } else if (event.type === "result") {
+            const result: ConvertResult = {
+              fileName: event.fileName,
+              status: event.status,
+              pageId: event.pageId,
+              error: event.error,
+              logFile: event.logFile,
+              mdFile: event.mdFile,
+            };
+            setResults((prev) => {
+              const next = [...prev];
+              const existingIdx = next.findIndex((r) => r.fileName === file.name);
+              if (existingIdx >= 0) {
+                next[existingIdx] = result;
+              } else {
+                next.push(result);
+              }
+              return next;
+            });
+            setFileProgresses((prev) => {
+              const next = [...prev];
+              if (next[uiIndex]) {
+                next[uiIndex] = {
+                  ...next[uiIndex],
+                  stepIndex: next[uiIndex].totalSteps,
+                  message: event.status === "success" ? "완료" : "실패",
+                  result,
+                };
+              }
+              return next;
+            });
+          }
+        }
+      }
+    } catch {
+      setFileProgresses((prev) => {
+        const next = [...prev];
+        next[uiIndex] = {
+          ...next[uiIndex],
+          message: "재시도 실패",
+          result: {
+            fileName: file.name,
+            status: "error",
+            error: "재시도 중 오류가 발생했습니다.",
+          },
+        };
+        return next;
+      });
+    } finally {
+      setRetryingIndex(null);
+    }
+  };
+
+  const handleViewFile = async (resultIndex: number, type: "log" | "markdown") => {
+    if (viewingFile?.resultIndex === resultIndex && viewingFile?.type === type) {
+      setViewingFile(null);
+      setViewerContent("");
+      return;
+    }
+
+    const result = fileProgresses[resultIndex]?.result;
+    if (!result) return;
+    const fileName = type === "log" ? result.logFile : result.mdFile;
+    if (!fileName) return;
+
+    const dir = type === "log" ? "logs" : "markdown";
+    setViewingFile({ resultIndex, type });
+    setViewerLoading(true);
+    setViewerContent("");
+
+    try {
+      const res = await fetch(`/api/files/${dir}/${encodeURIComponent(fileName)}`);
+      const data = await res.json();
+      if (data.content) {
+        setViewerContent(data.content);
+      } else {
+        setViewerContent("파일을 불러올 수 없습니다.");
+      }
+    } catch {
+      setViewerContent("파일을 불러오는 중 오류가 발생했습니다.");
+    } finally {
+      setViewerLoading(false);
+    }
+  };
+
+  const handleDownloadFile = (type: "log" | "markdown", fileName: string) => {
+    const dir = type === "log" ? "logs" : "markdown";
+    window.open(`/api/files/${dir}/${encodeURIComponent(fileName)}?download=true`, "_blank");
   };
 
   const handleRefreshPages = () => {
@@ -189,7 +497,20 @@ export default function Home() {
       {/* Header */}
       <header className="bg-white border-b border-gray-200 px-6 py-4">
         <div className="max-w-4xl mx-auto flex items-center justify-between">
-          <h1 className="text-xl font-bold">WikiMigrator</h1>
+          <div className="flex items-center gap-6">
+            <h1 className="text-xl font-bold">WikiMigrator</h1>
+            <nav className="flex items-center gap-4 text-sm">
+              <Link href="/" className="text-black font-medium">
+                변환
+              </Link>
+              <Link
+                href="/files"
+                className="text-gray-400 hover:text-gray-600 transition"
+              >
+                파일
+              </Link>
+            </nav>
+          </div>
           {isConnected && (
             <div className="flex items-center gap-3">
               <div className="flex items-center gap-2 text-sm text-gray-600">
@@ -395,10 +716,25 @@ export default function Home() {
                 )}
               </div>
 
+              {/* Options */}
+              <div className="flex items-center gap-3 px-1">
+                <label className="flex items-center gap-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={attachPdf}
+                    onChange={(e) => setAttachPdf(e.target.checked)}
+                    className="w-4 h-4 rounded border-gray-300 text-black focus:ring-black cursor-pointer"
+                  />
+                  <span className="text-sm text-gray-600">
+                    PDF 원본을 Notion 페이지에 첨부
+                  </span>
+                </label>
+              </div>
+
               {/* Convert button */}
               <button
                 onClick={handleConvert}
-                disabled={converting || !selectedPage || files.length === 0}
+                disabled={converting || retryingIndex !== null || !selectedPage || files.length === 0}
                 className="w-full bg-black text-white py-4 rounded-xl font-semibold text-lg hover:bg-gray-800 disabled:bg-gray-300 disabled:cursor-not-allowed transition"
               >
                 {converting ? (
@@ -411,46 +747,140 @@ export default function Home() {
                 )}
               </button>
 
-              {/* Results */}
-              {results.length > 0 && (
+              {/* Progress + Results */}
+              {fileProgresses.length > 0 && (
                 <div className="bg-white rounded-xl border border-gray-200 p-6 space-y-4">
-                  <h3 className="text-lg font-semibold">변환 결과</h3>
-                  <div className="space-y-2">
-                    {results.map((result, index) => (
-                      <div
-                        key={index}
-                        className={`flex items-center justify-between rounded-lg px-4 py-3 ${
-                          result.status === "success"
-                            ? "bg-green-50"
-                            : "bg-red-50"
-                        }`}
-                      >
-                        <div className="flex items-center gap-3">
-                          <span
-                            className={
-                              result.status === "success"
-                                ? "text-green-500"
-                                : "text-red-500"
-                            }
-                          >
-                            {result.status === "success" ? "OK" : "ERR"}
-                          </span>
-                          <span className="text-sm">{result.fileName}</span>
-                        </div>
-                        {result.status === "success" && result.pageId && (
-                          <a
-                            href={`https://notion.so/${result.pageId.replace(/-/g, "")}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-sm text-blue-600 hover:underline"
-                          >
-                            Notion에서 보기
-                          </a>
-                        )}
-                        {result.status === "error" && (
-                          <span className="text-xs text-red-500">
-                            {result.error}
-                          </span>
+                  <h3 className="text-lg font-semibold">변환 진행 상황</h3>
+                  <div className="space-y-3">
+                    {fileProgresses.map((fp, index) => (
+                      <div key={index}>
+                        {fp.result ? (
+                          /* 완료된 파일: 결과 행 */
+                          <>
+                            <div
+                              className={`flex items-center justify-between rounded-lg px-4 py-3 ${
+                                fp.result.status === "success"
+                                  ? "bg-green-50"
+                                  : "bg-red-50"
+                              }`}
+                            >
+                              <div className="flex items-center gap-3">
+                                <span
+                                  className={
+                                    fp.result.status === "success"
+                                      ? "text-green-500"
+                                      : "text-red-500"
+                                  }
+                                >
+                                  {fp.result.status === "success" ? "OK" : "ERR"}
+                                </span>
+                                <span className="text-sm">{fp.result.fileName}</span>
+                              </div>
+                              {fp.result.status === "success" && fp.result.pageId && (
+                                <a
+                                  href={`https://notion.so/${fp.result.pageId.replace(/-/g, "")}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-sm text-blue-600 hover:underline"
+                                >
+                                  Notion에서 보기
+                                </a>
+                              )}
+                              {fp.result.status === "error" && (
+                                <div className="flex items-center gap-3">
+                                  <button
+                                    onClick={() => handleRetry(index)}
+                                    disabled={converting || retryingIndex !== null}
+                                    className="text-xs px-2.5 py-1 rounded font-medium transition bg-gray-100 text-gray-700 hover:bg-gray-200 disabled:opacity-40 disabled:cursor-not-allowed"
+                                  >
+                                    재시도
+                                  </button>
+                                  <div className="flex items-center gap-1">
+                                    {fp.result.logFile && (
+                                      <button
+                                        onClick={() => handleViewFile(index, "log")}
+                                        className={`text-xs px-2 py-1 rounded transition ${
+                                          viewingFile?.resultIndex === index && viewingFile?.type === "log"
+                                            ? "bg-amber-200 text-amber-800"
+                                            : "bg-amber-100 text-amber-700 hover:bg-amber-200"
+                                        }`}
+                                      >
+                                        로그 보기
+                                      </button>
+                                    )}
+                                    {fp.result.mdFile && (
+                                      <button
+                                        onClick={() => handleViewFile(index, "markdown")}
+                                        className={`text-xs px-2 py-1 rounded transition ${
+                                          viewingFile?.resultIndex === index && viewingFile?.type === "markdown"
+                                            ? "bg-blue-200 text-blue-800"
+                                            : "bg-blue-100 text-blue-700 hover:bg-blue-200"
+                                        }`}
+                                      >
+                                        마크다운 보기
+                                      </button>
+                                    )}
+                                  </div>
+                                  <span className="text-xs text-red-500">
+                                    {fp.result.error}
+                                  </span>
+                                </div>
+                              )}
+                            </div>
+                            {viewingFile?.resultIndex === index && (
+                              <div className="mt-2">
+                                <FileViewer
+                                  file={{
+                                    name: (viewingFile.type === "log" ? fp.result.logFile : fp.result.mdFile) || "",
+                                    type: viewingFile.type === "log" ? "log" : "markdown",
+                                    size: 0,
+                                    modifiedAt: "",
+                                    path: "",
+                                  }}
+                                  content={viewerContent}
+                                  loading={viewerLoading}
+                                  onClose={() => {
+                                    setViewingFile(null);
+                                    setViewerContent("");
+                                  }}
+                                  onDownload={() => {
+                                    const fileName = viewingFile.type === "log" ? fp.result!.logFile : fp.result!.mdFile;
+                                    if (fileName) handleDownloadFile(viewingFile.type, fileName);
+                                  }}
+                                />
+                              </div>
+                            )}
+                          </>
+                        ) : (
+                          /* 미완료 파일: 진행 바 */
+                          <div className="bg-gray-50 rounded-lg px-4 py-3 space-y-2">
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-3">
+                                {fp.stepIndex >= 0 && (
+                                  <span className="inline-block w-4 h-4 border-2 border-gray-400 border-t-transparent rounded-full animate-spin shrink-0" />
+                                )}
+                                <span className="text-sm font-medium">{fp.fileName}</span>
+                              </div>
+                              <span className="text-xs text-gray-400">
+                                {fp.stepIndex >= 0
+                                  ? `${fp.stepIndex + 1} / ${fp.totalSteps}`
+                                  : "대기 중"}
+                              </span>
+                            </div>
+                            <div className="w-full bg-gray-200 rounded-full h-2">
+                              <div
+                                className="bg-black h-2 rounded-full transition-all duration-300"
+                                style={{
+                                  width: fp.stepIndex >= 0
+                                    ? `${((fp.stepIndex + 1) / fp.totalSteps) * 100}%`
+                                    : "0%",
+                                }}
+                              />
+                            </div>
+                            {fp.stepIndex >= 0 && (
+                              <p className="text-xs text-gray-500">{fp.message}</p>
+                            )}
+                          </div>
                         )}
                       </div>
                     ))}

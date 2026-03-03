@@ -38,6 +38,11 @@ export class ConvertLogger {
     this.append("ERROR", message);
   }
 
+  /** 로그 파일명 반환 */
+  get logFileName(): string {
+    return this.fileName;
+  }
+
   /** 섹션 구분용 헤더 */
   section(title: string): void {
     this.lines.push("");
