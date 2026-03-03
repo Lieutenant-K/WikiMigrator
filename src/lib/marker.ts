@@ -34,7 +34,7 @@ export async function convertPdfToMarkdown(
   log.section("PDF → Markdown 변환 (Marker)");
   log.info(`입력 PDF: ${pdfPath}`);
   log.info(`출력 디렉토리: ${outputDir}`);
-  log.info(`명령어: marker_single ${pdfPath} --output_format markdown --output_dir ${outputDir} --disable_image_extraction --paginate_output`);
+  log.info(`명령어: marker_single ${pdfPath} --output_format markdown --output_dir ${outputDir} --disable_image_extraction --disable_ocr --paginate_output`);
 
   return new Promise((resolve, reject) => {
     execFile(
@@ -44,9 +44,10 @@ export async function convertPdfToMarkdown(
         "--output_format", "markdown",
         "--output_dir", outputDir,
         "--disable_image_extraction",
+        "--disable_ocr",
         "--paginate_output",
       ],
-      { timeout: TIMEOUT_MS, env: { ...process.env, PATH: EXEC_PATH } },
+      { timeout: TIMEOUT_MS, env: { ...process.env, PATH: EXEC_PATH} },
       async (error, stdout, stderr) => {
         if (error) {
           log.error(`Marker 실행 실패: ${error.message}`);
