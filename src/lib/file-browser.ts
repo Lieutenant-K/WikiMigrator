@@ -9,10 +9,14 @@ export interface FileEntry {
   path: string;
 }
 
-const ALLOWED_DIRS: Record<string, string> = {
+let ALLOWED_DIRS: Record<string, string> = {
   logs: path.join(process.cwd(), "logs"),
   markdown: path.join(process.cwd(), "output_markdown"),
 };
+
+export function setFileBrowserDirs(dirs: { logs: string; markdown: string }): void {
+  ALLOWED_DIRS = { ...dirs };
+}
 
 export function isPathSafe(fileName: string): boolean {
   if (

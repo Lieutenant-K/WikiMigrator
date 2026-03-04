@@ -2,8 +2,10 @@ import { execFile } from "child_process";
 import path from "path";
 import type { ConvertLogger } from "./logger";
 
-const SCRIPT_PATH = path.join(process.cwd(), "scripts", "extract_table_links.py");
+let SCRIPT_PATH = path.join(process.cwd(), "scripts", "extract_table_links.py");
 const TIMEOUT_MS = 3 * 60 * 1000; // 3분
+let USE_PYMUPDF_BINARY = false;
+let PYMUPDF_TOOLS_PATH = "";
 
 // brew, pyenv 등 사용자 설치 경로 보완
 const EXEC_PATH = [
@@ -11,6 +13,17 @@ const EXEC_PATH = [
   "/usr/local/bin",
   process.env.PATH,
 ].join(":");
+
+export function setTableLinkPaths(opts: {
+  scriptPath?: string;
+  pymupdfToolsPath?: string;
+}): void {
+  if (opts.scriptPath) SCRIPT_PATH = opts.scriptPath;
+  if (opts.pymupdfToolsPath) {
+    PYMUPDF_TOOLS_PATH = opts.pymupdfToolsPath;
+    USE_PYMUPDF_BINARY = true;
+  }
+}
 
 // --- 타입 정의 ---
 
@@ -56,10 +69,15 @@ export async function extractTableLinksFromPDF(
   log.section("테이블 링크 추출 (PyMuPDF)");
   log.info(`PDF: ${pdfPath}`);
 
+  const cmd = USE_PYMUPDF_BINARY ? PYMUPDF_TOOLS_PATH : "python3";
+  const args = USE_PYMUPDF_BINARY
+    ? ["extract-table-links", pdfPath]
+    : [SCRIPT_PATH, pdfPath];
+
   return new Promise((resolve, reject) => {
     execFile(
-      "python3",
-      [SCRIPT_PATH, pdfPath],
+      cmd,
+      args,
       {
         timeout: TIMEOUT_MS,
         env: { ...process.env, PATH: EXEC_PATH },

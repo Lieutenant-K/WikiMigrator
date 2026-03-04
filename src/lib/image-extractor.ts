@@ -3,8 +3,24 @@ import { promises as fs } from "fs";
 import path from "path";
 import type { ConvertLogger } from "./logger";
 
-const TMP_DIR = path.join(process.cwd(), "tmp");
-const SCRIPT_PATH = path.join(process.cwd(), "scripts", "extract_images.py");
+// Electron main process에서 설정됨
+let TMP_DIR = path.join(process.cwd(), "tmp");
+let SCRIPT_PATH = path.join(process.cwd(), "scripts", "extract_images.py");
+let USE_PYMUPDF_BINARY = false;
+let PYMUPDF_TOOLS_PATH = "";
+
+export function setImageExtractorPaths(opts: {
+  tmpDir: string;
+  scriptPath?: string;
+  pymupdfToolsPath?: string;
+}): void {
+  TMP_DIR = opts.tmpDir;
+  if (opts.scriptPath) SCRIPT_PATH = opts.scriptPath;
+  if (opts.pymupdfToolsPath) {
+    PYMUPDF_TOOLS_PATH = opts.pymupdfToolsPath;
+    USE_PYMUPDF_BINARY = true;
+  }
+}
 const TIMEOUT_MS = 3 * 60 * 1000; // 3분
 
 // brew, pyenv 등 사용자 설치 경로 보완
@@ -74,10 +90,15 @@ export async function extractImagesWithPyMuPDF(
   log.info(`PDF: ${pdfPath}`);
   log.info(`이미지 출력 디렉토리: ${imageDir}`);
 
+  const cmd = USE_PYMUPDF_BINARY ? PYMUPDF_TOOLS_PATH : "python3";
+  const args = USE_PYMUPDF_BINARY
+    ? ["extract-images", pdfPath, imageDir]
+    : [SCRIPT_PATH, pdfPath, imageDir];
+
   return new Promise((resolve, reject) => {
     execFile(
-      "python3",
-      [SCRIPT_PATH, pdfPath, imageDir],
+      cmd,
+      args,
       {
         timeout: TIMEOUT_MS,
         env: { ...process.env, PATH: EXEC_PATH },

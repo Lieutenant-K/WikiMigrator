@@ -1,9 +1,12 @@
 # dependencies
 node_modules/
 
-# next.js
+# build output
+dist-electron/
+dist-renderer/
+release/
+build/
 .next/
-out/
 
 # env
 .env.local
@@ -15,6 +18,10 @@ output_markdown/
 
 # build cache
 tsconfig.tsbuildinfo
+
+# PyInstaller
+resources/pymupdf-tools
+*.spec
 
 # claude
 .claude/

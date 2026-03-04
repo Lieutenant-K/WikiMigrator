@@ -1,7 +1,4 @@
-"use client";
-
-import { useState, useCallback, useRef } from "react";
-import Link from "next/link";
+import { useState, useCallback, useRef, useEffect } from "react";
 import FileViewer from "@/components/FileViewer";
 
 interface NotionPage {
@@ -50,25 +47,25 @@ interface FileProgress {
   result?: ConvertResult;
 }
 
+interface SelectedFile {
+  name: string;
+  buffer: ArrayBuffer;
+  size: number;
+}
+
 const TOKEN_STORAGE_KEY = "notion_token";
 
 export default function Home() {
   const [token, setToken] = useState(() => {
-    if (typeof window !== "undefined") {
-      return localStorage.getItem(TOKEN_STORAGE_KEY) || "";
-    }
-    return "";
+    return localStorage.getItem(TOKEN_STORAGE_KEY) || "";
   });
   const [tokenInput, setTokenInput] = useState("");
   const [isConnected, setIsConnected] = useState(() => {
-    if (typeof window !== "undefined") {
-      return !!localStorage.getItem(TOKEN_STORAGE_KEY);
-    }
-    return false;
+    return !!localStorage.getItem(TOKEN_STORAGE_KEY);
   });
   const [pages, setPages] = useState<NotionPage[]>([]);
   const [selectedPage, setSelectedPage] = useState("");
-  const [files, setFiles] = useState<File[]>([]);
+  const [files, setFiles] = useState<SelectedFile[]>([]);
   const [converting, setConverting] = useState(false);
   const [results, setResults] = useState<ConvertResult[]>([]);
   const [error, setError] = useState("");
@@ -80,38 +77,55 @@ export default function Home() {
   const [viewerLoading, setViewerLoading] = useState(false);
   const [fileProgresses, setFileProgresses] = useState<FileProgress[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const convertedFilesRef = useRef<File[]>([]);
+  const convertedFilesRef = useRef<SelectedFile[]>([]);
   const [retryingIndex, setRetryingIndex] = useState<number | null>(null);
   const [attachPdf, setAttachPdf] = useState(false);
+  const [markerStatus, setMarkerStatus] = useState<"checking" | "installed" | "missing" | "installing">("checking");
 
-  const fetchPages = useCallback(
-    async (accessToken: string) => {
-      setLoadingPages(true);
-      try {
-        const res = await fetch("/api/pages", {
-          headers: { Authorization: `Bearer ${accessToken}` },
-        });
-        if (res.status === 401) {
-          setIsConnected(false);
-          setToken("");
-          localStorage.removeItem(TOKEN_STORAGE_KEY);
-          setError("유효하지 않은 토큰입니다. 다시 입력해주세요.");
-          return;
-        }
-        const data = await res.json();
-        if (data.error) {
-          setError(data.error);
-        } else if (data.pages) {
-          setPages(data.pages);
-        }
-      } catch {
-        setError("페이지 목록을 불러오는데 실패했습니다.");
-      } finally {
-        setLoadingPages(false);
+  // Marker 설치 상태 확인
+  useEffect(() => {
+    window.electronAPI.checkMarker().then((result) => {
+      setMarkerStatus(result.installed ? "installed" : "missing");
+    });
+  }, []);
+
+  const handleInstallMarker = async () => {
+    setMarkerStatus("installing");
+    try {
+      const result = await window.electronAPI.installMarker();
+      if (result.success) {
+        setMarkerStatus("installed");
+      } else {
+        setError(`Marker 설치 실패: ${result.error}`);
+        setMarkerStatus("missing");
       }
-    },
-    []
-  );
+    } catch {
+      setError("Marker 설치 중 오류가 발생했습니다.");
+      setMarkerStatus("missing");
+    }
+  };
+
+  const fetchPages = useCallback(async (accessToken: string) => {
+    setLoadingPages(true);
+    try {
+      const data = await window.electronAPI.getPages(accessToken);
+      if (data.pages) {
+        setPages(data.pages);
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "페이지 목록을 불러오는데 실패했습니다.";
+      if (message.includes("unauthorized") || message.includes("401")) {
+        setIsConnected(false);
+        setToken("");
+        localStorage.removeItem(TOKEN_STORAGE_KEY);
+        setError("유효하지 않은 토큰입니다. 다시 입력해주세요.");
+      } else {
+        setError(message);
+      }
+    } finally {
+      setLoadingPages(false);
+    }
+  }, []);
 
   const handleConnect = async () => {
     const trimmed = tokenInput.trim();
@@ -121,17 +135,7 @@ export default function Home() {
     setError("");
 
     try {
-      const res = await fetch("/api/pages", {
-        headers: { Authorization: `Bearer ${trimmed}` },
-      });
-
-      if (!res.ok) {
-        const data = await res.json();
-        setError(data.error || "토큰 검증에 실패했습니다. 올바른 Internal Integration Token인지 확인해주세요.");
-        return;
-      }
-
-      const data = await res.json();
+      const data = await window.electronAPI.getPages(trimmed);
       setToken(trimmed);
       setIsConnected(true);
       localStorage.setItem(TOKEN_STORAGE_KEY, trimmed);
@@ -141,7 +145,7 @@ export default function Home() {
         setPages(data.pages);
       }
     } catch {
-      setError("연결 중 오류가 발생했습니다.");
+      setError("토큰 검증에 실패했습니다. 올바른 Internal Integration Token인지 확인해주세요.");
     } finally {
       setConnectingToken(false);
     }
@@ -157,30 +161,77 @@ export default function Home() {
     localStorage.removeItem(TOKEN_STORAGE_KEY);
   };
 
-  const handleDrop = useCallback((e: React.DragEvent) => {
+  const readFileAsArrayBuffer = (file: File): Promise<ArrayBuffer> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as ArrayBuffer);
+      reader.onerror = reject;
+      reader.readAsArrayBuffer(file);
+    });
+  };
+
+  const handleDrop = useCallback(async (e: React.DragEvent) => {
     e.preventDefault();
     setDragOver(false);
     const droppedFiles = Array.from(e.dataTransfer.files).filter((f) =>
       f.name.toLowerCase().endsWith(".pdf")
     );
-    setFiles((prev) => [...prev, ...droppedFiles]);
+    const selectedFiles: SelectedFile[] = [];
+    for (const file of droppedFiles) {
+      const buffer = await readFileAsArrayBuffer(file);
+      selectedFiles.push({ name: file.name, buffer, size: file.size });
+    }
+    setFiles((prev) => [...prev, ...selectedFiles]);
   }, []);
 
-  const handleFileSelect = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
-      if (e.target.files) {
-        const selectedFiles = Array.from(e.target.files).filter((f) =>
-          f.name.toLowerCase().endsWith(".pdf")
-        );
-        setFiles((prev) => [...prev, ...selectedFiles]);
+  const handleFileSelect = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files) {
+      const selectedFiles: SelectedFile[] = [];
+      const htmlFiles = Array.from(e.target.files).filter((f) =>
+        f.name.toLowerCase().endsWith(".pdf")
+      );
+      for (const file of htmlFiles) {
+        const buffer = await readFileAsArrayBuffer(file);
+        selectedFiles.push({ name: file.name, buffer, size: file.size });
       }
-    },
-    []
-  );
+      setFiles((prev) => [...prev, ...selectedFiles]);
+    }
+  }, []);
+
+  const handleNativeFileSelect = async () => {
+    const result = await window.electronAPI.selectFiles();
+    if (result) {
+      setFiles((prev) => [...prev, ...result]);
+    }
+  };
 
   const removeFile = useCallback((index: number) => {
     setFiles((prev) => prev.filter((_, i) => i !== index));
   }, []);
+
+  const runConvert = async (
+    filesToConvert: SelectedFile[],
+    onProgress: (event: StreamEvent) => void,
+  ) => {
+    const cleanup = window.electronAPI.onConvertEvent((data) => {
+      onProgress(data as StreamEvent);
+    });
+
+    try {
+      await window.electronAPI.convert({
+        accessToken: token,
+        parentPageId: selectedPage,
+        attachPdf,
+        fileBuffers: filesToConvert.map(f => ({
+          name: f.name,
+          buffer: f.buffer,
+          size: f.size,
+        })),
+      });
+    } finally {
+      cleanup();
+    }
+  };
 
   const handleConvert = async () => {
     if (!selectedPage || files.length === 0 || !token) return;
@@ -191,7 +242,6 @@ export default function Home() {
     setViewingFile(null);
     setViewerContent("");
 
-    // 파일별 진행 상태 초기화
     const totalSteps = attachPdf ? 11 : 10;
     const initialProgresses: FileProgress[] = files.map((f) => ({
       fileName: f.name,
@@ -203,95 +253,52 @@ export default function Home() {
     setFileProgresses(initialProgresses);
     convertedFilesRef.current = [...files];
 
+    const collectedResults: ConvertResult[] = [];
+
     try {
-      const formData = new FormData();
-      formData.append("parentPageId", selectedPage);
-      formData.append("attachPdf", String(attachPdf));
-      files.forEach((file) => formData.append("files", file));
+      await runConvert(files, (event) => {
+        if (event.type === "progress") {
+          setFileProgresses((prev) => {
+            const next = [...prev];
+            if (next[event.fileIndex]) {
+              next[event.fileIndex] = {
+                ...next[event.fileIndex],
+                stepIndex: event.stepIndex,
+                totalSteps: event.totalSteps,
+                stepName: event.step,
+                message: event.message,
+              };
+            }
+            return next;
+          });
+        } else if (event.type === "result") {
+          const result: ConvertResult = {
+            fileName: event.fileName,
+            status: event.status,
+            pageId: event.pageId,
+            error: event.error,
+            logFile: event.logFile,
+            mdFile: event.mdFile,
+          };
+          collectedResults.push(result);
+          setResults([...collectedResults]);
 
-      const res = await fetch("/api/convert", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
-        body: formData,
-      });
-
-      if (!res.ok) {
-        const data = await res.json();
-        setError(data.error || "변환 중 오류가 발생했습니다.");
-        setFileProgresses([]);
-        setConverting(false);
-        return;
-      }
-
-      const reader = res.body!.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      const collectedResults: ConvertResult[] = [];
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-
-        const parts = buffer.split("\n\n");
-        buffer = parts.pop() || "";
-
-        for (const part of parts) {
-          const line = part.trim();
-          if (!line.startsWith("data: ")) continue;
-
-          const json = line.slice(6);
-          let event: StreamEvent;
-          try {
-            event = JSON.parse(json);
-          } catch {
-            continue;
-          }
-
-          if (event.type === "progress") {
-            setFileProgresses((prev) => {
-              const next = [...prev];
-              if (next[event.fileIndex]) {
-                next[event.fileIndex] = {
-                  ...next[event.fileIndex],
-                  stepIndex: event.stepIndex,
-                  totalSteps: event.totalSteps,
-                  stepName: event.step,
-                  message: event.message,
-                };
-              }
-              return next;
-            });
-          } else if (event.type === "result") {
-            const result: ConvertResult = {
-              fileName: event.fileName,
-              status: event.status,
-              pageId: event.pageId,
-              error: event.error,
-              logFile: event.logFile,
-              mdFile: event.mdFile,
-            };
-            collectedResults.push(result);
-            setResults([...collectedResults]);
-
-            setFileProgresses((prev) => {
-              const next = [...prev];
-              if (next[event.fileIndex]) {
-                next[event.fileIndex] = {
-                  ...next[event.fileIndex],
-                  stepIndex: next[event.fileIndex].totalSteps,
-                  message: event.status === "success" ? "완료" : "실패",
-                  result,
-                };
-              }
-              return next;
-            });
-          } else if (event.type === "done") {
-            setFiles([]);
-          }
+          setFileProgresses((prev) => {
+            const next = [...prev];
+            if (next[event.fileIndex]) {
+              next[event.fileIndex] = {
+                ...next[event.fileIndex],
+                stepIndex: next[event.fileIndex].totalSteps,
+                message: event.status === "success" ? "완료" : "실패",
+                result,
+              };
+            }
+            return next;
+          });
+        } else if (event.type === "done") {
+          setFiles([]);
         }
-      }
+      });
     } catch {
       setError("변환 중 오류가 발생했습니다.");
     } finally {
@@ -324,106 +331,54 @@ export default function Home() {
     });
 
     try {
-      const formData = new FormData();
-      formData.append("parentPageId", selectedPage);
-      formData.append("attachPdf", String(attachPdf));
-      formData.append("files", file);
-
-      const res = await fetch("/api/convert", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
-        body: formData,
-      });
-
-      if (!res.ok) {
-        const data = await res.json();
-        setFileProgresses((prev) => {
-          const next = [...prev];
-          next[uiIndex] = {
-            ...next[uiIndex],
-            message: "재시도 실패",
-            result: {
-              fileName: file.name,
-              status: "error",
-              error: data.error || "재시도 중 오류가 발생했습니다.",
-            },
+      await runConvert([file], (event) => {
+        if (event.type === "progress") {
+          setFileProgresses((prev) => {
+            const next = [...prev];
+            if (next[uiIndex]) {
+              next[uiIndex] = {
+                ...next[uiIndex],
+                stepIndex: event.stepIndex,
+                totalSteps: event.totalSteps,
+                stepName: event.step,
+                message: event.message,
+              };
+            }
+            return next;
+          });
+        } else if (event.type === "result") {
+          const result: ConvertResult = {
+            fileName: event.fileName,
+            status: event.status,
+            pageId: event.pageId,
+            error: event.error,
+            logFile: event.logFile,
+            mdFile: event.mdFile,
           };
-          return next;
-        });
-        return;
-      }
-
-      const reader = res.body!.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const parts = buffer.split("\n\n");
-        buffer = parts.pop() || "";
-
-        for (const part of parts) {
-          const line = part.trim();
-          if (!line.startsWith("data: ")) continue;
-
-          let event: StreamEvent;
-          try {
-            event = JSON.parse(line.slice(6));
-          } catch {
-            continue;
-          }
-
-          if (event.type === "progress") {
-            setFileProgresses((prev) => {
-              const next = [...prev];
-              if (next[uiIndex]) {
-                next[uiIndex] = {
-                  ...next[uiIndex],
-                  stepIndex: event.stepIndex,
-                  totalSteps: event.totalSteps,
-                  stepName: event.step,
-                  message: event.message,
-                };
-              }
-              return next;
-            });
-          } else if (event.type === "result") {
-            const result: ConvertResult = {
-              fileName: event.fileName,
-              status: event.status,
-              pageId: event.pageId,
-              error: event.error,
-              logFile: event.logFile,
-              mdFile: event.mdFile,
-            };
-            setResults((prev) => {
-              const next = [...prev];
-              const existingIdx = next.findIndex((r) => r.fileName === file.name);
-              if (existingIdx >= 0) {
-                next[existingIdx] = result;
-              } else {
-                next.push(result);
-              }
-              return next;
-            });
-            setFileProgresses((prev) => {
-              const next = [...prev];
-              if (next[uiIndex]) {
-                next[uiIndex] = {
-                  ...next[uiIndex],
-                  stepIndex: next[uiIndex].totalSteps,
-                  message: event.status === "success" ? "완료" : "실패",
-                  result,
-                };
-              }
-              return next;
-            });
-          }
+          setResults((prev) => {
+            const next = [...prev];
+            const existingIdx = next.findIndex((r) => r.fileName === file.name);
+            if (existingIdx >= 0) {
+              next[existingIdx] = result;
+            } else {
+              next.push(result);
+            }
+            return next;
+          });
+          setFileProgresses((prev) => {
+            const next = [...prev];
+            if (next[uiIndex]) {
+              next[uiIndex] = {
+                ...next[uiIndex],
+                stepIndex: next[uiIndex].totalSteps,
+                message: event.status === "success" ? "완료" : "실패",
+                result,
+              };
+            }
+            return next;
+          });
         }
-      }
+      });
     } catch {
       setFileProgresses((prev) => {
         const next = [...prev];
@@ -461,9 +416,8 @@ export default function Home() {
     setViewerContent("");
 
     try {
-      const res = await fetch(`/api/files/${dir}/${encodeURIComponent(fileName)}`);
-      const data = await res.json();
-      if (data.content) {
+      const data = await window.electronAPI.readFile(dir, fileName);
+      if (data?.content) {
         setViewerContent(data.content);
       } else {
         setViewerContent("파일을 불러올 수 없습니다.");
@@ -475,9 +429,20 @@ export default function Home() {
     }
   };
 
-  const handleDownloadFile = (type: "log" | "markdown", fileName: string) => {
+  const handleDownloadFile = async (type: "log" | "markdown", fileName: string) => {
     const dir = type === "log" ? "logs" : "markdown";
-    window.open(`/api/files/${dir}/${encodeURIComponent(fileName)}?download=true`, "_blank");
+    const data = await window.electronAPI.downloadFile(dir, fileName);
+    if (data) {
+      const blob = new Blob([data.buffer]);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = data.fileName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }
   };
 
   const handleRefreshPages = () => {
@@ -493,41 +458,7 @@ export default function Home() {
   };
 
   return (
-    <div className="min-h-screen flex flex-col">
-      {/* Header */}
-      <header className="bg-white border-b border-gray-200 px-6 py-4">
-        <div className="max-w-4xl mx-auto flex items-center justify-between">
-          <div className="flex items-center gap-6">
-            <h1 className="text-xl font-bold">WikiMigrator</h1>
-            <nav className="flex items-center gap-4 text-sm">
-              <Link href="/" className="text-black font-medium">
-                변환
-              </Link>
-              <Link
-                href="/files"
-                className="text-gray-400 hover:text-gray-600 transition"
-              >
-                파일
-              </Link>
-            </nav>
-          </div>
-          {isConnected && (
-            <div className="flex items-center gap-3">
-              <div className="flex items-center gap-2 text-sm text-gray-600">
-                <span className="inline-block w-2 h-2 bg-green-500 rounded-full" />
-                연결됨
-              </div>
-              <button
-                onClick={handleDisconnect}
-                className="text-xs text-gray-400 hover:text-red-500 transition"
-              >
-                연결 해제
-              </button>
-            </div>
-          )}
-        </div>
-      </header>
-
+    <>
       {/* Main */}
       <main className="flex-1 px-6 py-10">
         <div className="max-w-4xl mx-auto space-y-8">
@@ -538,15 +469,48 @@ export default function Home() {
             </p>
           </div>
 
+          {/* Marker 설치 배너 */}
+          {markerStatus === "missing" && (
+            <div className="bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3 rounded-lg flex items-center justify-between">
+              <div>
+                <p className="font-medium">Marker가 설치되지 않았습니다</p>
+                <p className="text-sm text-amber-600">PDF 변환에 필요한 marker-pdf 패키지를 설치해주세요.</p>
+              </div>
+              <button
+                onClick={handleInstallMarker}
+                className="bg-amber-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-amber-700 transition whitespace-nowrap"
+              >
+                자동 설치
+              </button>
+            </div>
+          )}
+          {markerStatus === "installing" && (
+            <div className="bg-blue-50 border border-blue-200 text-blue-800 px-4 py-3 rounded-lg flex items-center gap-3">
+              <span className="inline-block w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+              <span>Marker 설치 중... (시간이 걸릴 수 있습니다)</span>
+            </div>
+          )}
+
           {/* Error */}
           {error && (
             <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg">
               {error}
+              <button onClick={() => setError("")} className="float-right font-bold">x</button>
+            </div>
+          )}
+
+          {/* Connection status in header area */}
+          {isConnected && (
+            <div className="flex items-center justify-end gap-3 -mt-4">
+              <div className="flex items-center gap-2 text-sm text-gray-600">
+                <span className="inline-block w-2 h-2 bg-green-500 rounded-full" />
+                연결됨
+              </div>
               <button
-                onClick={() => setError("")}
-                className="float-right font-bold"
+                onClick={handleDisconnect}
+                className="text-xs text-gray-400 hover:text-red-500 transition"
               >
-                x
+                연결 해제
               </button>
             </div>
           )}
@@ -573,12 +537,8 @@ export default function Home() {
                     </a>
                     {" "}에서 새 Integration을 생성하세요.
                   </li>
-                  <li>
-                    생성된 Integration의 Internal Integration Secret을 복사하세요.
-                  </li>
-                  <li>
-                    변환할 Notion 페이지에서 Integration을 연결(Connection)하세요.
-                  </li>
+                  <li>생성된 Integration의 Internal Integration Secret을 복사하세요.</li>
+                  <li>변환할 Notion 페이지에서 Integration을 연결(Connection)하세요.</li>
                 </ol>
               </div>
               <div className="flex gap-3">
@@ -586,9 +546,7 @@ export default function Home() {
                   type="password"
                   value={tokenInput}
                   onChange={(e) => setTokenInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") handleConnect();
-                  }}
+                  onKeyDown={(e) => { if (e.key === "Enter") handleConnect(); }}
                   placeholder="ntn_xxxxxxxxxxxxxxxxxxxx..."
                   className="flex-1 border border-gray-300 rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-black focus:border-transparent font-mono"
                 />
@@ -601,7 +559,7 @@ export default function Home() {
                 </button>
               </div>
               <p className="text-xs text-gray-400">
-                토큰은 브라우저의 localStorage에만 저장되며 서버에 저장되지 않습니다.
+                토큰은 이 앱의 localStorage에만 저장됩니다.
               </p>
             </div>
           ) : (
@@ -623,9 +581,7 @@ export default function Home() {
                   Integration이 연결된 페이지만 표시됩니다.
                 </p>
                 {loadingPages ? (
-                  <div className="text-gray-400 text-sm">
-                    페이지 목록 불러오는 중...
-                  </div>
+                  <div className="text-gray-400 text-sm">페이지 목록 불러오는 중...</div>
                 ) : pages.length === 0 ? (
                   <div className="text-gray-400 text-sm">
                     표시할 페이지가 없습니다. Notion에서 Integration을 페이지에 연결했는지 확인해주세요.
@@ -639,8 +595,7 @@ export default function Home() {
                     <option value="">페이지를 선택하세요</option>
                     {pages.map((page) => (
                       <option key={page.id} value={page.id}>
-                        {page.icon ? `${page.icon} ` : ""}
-                        {page.title}
+                        {page.icon ? `${page.icon} ` : ""}{page.title}
                       </option>
                     ))}
                   </select>
@@ -649,19 +604,22 @@ export default function Home() {
 
               {/* Step 3: Upload PDFs */}
               <div className="bg-white rounded-xl border border-gray-200 p-6 space-y-4">
-                <h3 className="text-lg font-semibold">2. PDF 파일 업로드</h3>
+                <div className="flex items-center justify-between">
+                  <h3 className="text-lg font-semibold">2. PDF 파일 업로드</h3>
+                  <button
+                    onClick={handleNativeFileSelect}
+                    className="text-xs text-gray-400 hover:text-gray-600 transition"
+                  >
+                    파일 선택...
+                  </button>
+                </div>
                 <div
-                  onDragOver={(e) => {
-                    e.preventDefault();
-                    setDragOver(true);
-                  }}
+                  onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
                   onDragLeave={() => setDragOver(false)}
                   onDrop={handleDrop}
                   onClick={() => fileInputRef.current?.click()}
                   className={`border-2 border-dashed rounded-xl p-10 text-center cursor-pointer transition ${
-                    dragOver
-                      ? "border-black bg-gray-50"
-                      : "border-gray-300 hover:border-gray-400"
+                    dragOver ? "border-black bg-gray-50" : "border-gray-300 hover:border-gray-400"
                   }`}
                 >
                   <input
@@ -674,42 +632,23 @@ export default function Home() {
                   />
                   <div className="space-y-2">
                     <div className="text-4xl text-gray-300">+</div>
-                    <p className="text-gray-500">
-                      PDF 파일을 드래그하거나 클릭하여 선택
-                    </p>
-                    <p className="text-gray-400 text-xs">
-                      여러 파일을 동시에 업로드할 수 있습니다.
-                    </p>
+                    <p className="text-gray-500">PDF 파일을 드래그하거나 클릭하여 선택</p>
+                    <p className="text-gray-400 text-xs">여러 파일을 동시에 업로드할 수 있습니다.</p>
                   </div>
                 </div>
 
-                {/* File list */}
                 {files.length > 0 && (
                   <div className="space-y-2">
                     {files.map((file, index) => (
-                      <div
-                        key={`${file.name}-${index}`}
-                        className="flex items-center justify-between bg-gray-50 rounded-lg px-4 py-3"
-                      >
+                      <div key={`${file.name}-${index}`} className="flex items-center justify-between bg-gray-50 rounded-lg px-4 py-3">
                         <div className="flex items-center gap-3 min-w-0">
-                          <span className="text-red-500 text-lg shrink-0">
-                            PDF
-                          </span>
+                          <span className="text-red-500 text-lg shrink-0">PDF</span>
                           <div className="min-w-0">
-                            <p className="text-sm font-medium truncate">
-                              {file.name}
-                            </p>
-                            <p className="text-xs text-gray-400">
-                              {formatFileSize(file.size)}
-                            </p>
+                            <p className="text-sm font-medium truncate">{file.name}</p>
+                            <p className="text-xs text-gray-400">{formatFileSize(file.size)}</p>
                           </div>
                         </div>
-                        <button
-                          onClick={() => removeFile(index)}
-                          className="text-gray-400 hover:text-red-500 shrink-0 ml-2"
-                        >
-                          x
-                        </button>
+                        <button onClick={() => removeFile(index)} className="text-gray-400 hover:text-red-500 shrink-0 ml-2">x</button>
                       </div>
                     ))}
                   </div>
@@ -725,9 +664,7 @@ export default function Home() {
                     onChange={(e) => setAttachPdf(e.target.checked)}
                     className="w-4 h-4 rounded border-gray-300 text-black focus:ring-black cursor-pointer"
                   />
-                  <span className="text-sm text-gray-600">
-                    PDF 원본을 Notion 페이지에 첨부
-                  </span>
+                  <span className="text-sm text-gray-600">PDF 원본을 Notion 페이지에 첨부</span>
                 </label>
               </div>
 
@@ -755,23 +692,12 @@ export default function Home() {
                     {fileProgresses.map((fp, index) => (
                       <div key={index}>
                         {fp.result ? (
-                          /* 완료된 파일: 결과 행 */
                           <>
-                            <div
-                              className={`flex items-center justify-between rounded-lg px-4 py-3 ${
-                                fp.result.status === "success"
-                                  ? "bg-green-50"
-                                  : "bg-red-50"
-                              }`}
-                            >
+                            <div className={`flex items-center justify-between rounded-lg px-4 py-3 ${
+                              fp.result.status === "success" ? "bg-green-50" : "bg-red-50"
+                            }`}>
                               <div className="flex items-center gap-3">
-                                <span
-                                  className={
-                                    fp.result.status === "success"
-                                      ? "text-green-500"
-                                      : "text-red-500"
-                                  }
-                                >
+                                <span className={fp.result.status === "success" ? "text-green-500" : "text-red-500"}>
                                   {fp.result.status === "success" ? "OK" : "ERR"}
                                 </span>
                                 <span className="text-sm">{fp.result.fileName}</span>
@@ -821,9 +747,7 @@ export default function Home() {
                                       </button>
                                     )}
                                   </div>
-                                  <span className="text-xs text-red-500">
-                                    {fp.result.error}
-                                  </span>
+                                  <span className="text-xs text-red-500">{fp.result.error}</span>
                                 </div>
                               )}
                             </div>
@@ -839,20 +763,16 @@ export default function Home() {
                                   }}
                                   content={viewerContent}
                                   loading={viewerLoading}
-                                  onClose={() => {
-                                    setViewingFile(null);
-                                    setViewerContent("");
-                                  }}
+                                  onClose={() => { setViewingFile(null); setViewerContent(""); }}
                                   onDownload={() => {
-                                    const fileName = viewingFile.type === "log" ? fp.result!.logFile : fp.result!.mdFile;
-                                    if (fileName) handleDownloadFile(viewingFile.type, fileName);
+                                    const fName = viewingFile.type === "log" ? fp.result!.logFile : fp.result!.mdFile;
+                                    if (fName) handleDownloadFile(viewingFile.type, fName);
                                   }}
                                 />
                               </div>
                             )}
                           </>
                         ) : (
-                          /* 미완료 파일: 진행 바 */
                           <div className="bg-gray-50 rounded-lg px-4 py-3 space-y-2">
                             <div className="flex items-center justify-between">
                               <div className="flex items-center gap-3">
@@ -862,9 +782,7 @@ export default function Home() {
                                 <span className="text-sm font-medium">{fp.fileName}</span>
                               </div>
                               <span className="text-xs text-gray-400">
-                                {fp.stepIndex >= 0
-                                  ? `${fp.stepIndex + 1} / ${fp.totalSteps}`
-                                  : "대기 중"}
+                                {fp.stepIndex >= 0 ? `${fp.stepIndex + 1} / ${fp.totalSteps}` : "대기 중"}
                               </span>
                             </div>
                             <div className="w-full bg-gray-200 rounded-full h-2">
@@ -877,9 +795,7 @@ export default function Home() {
                                 }}
                               />
                             </div>
-                            {fp.stepIndex >= 0 && (
-                              <p className="text-xs text-gray-500">{fp.message}</p>
-                            )}
+                            {fp.stepIndex >= 0 && <p className="text-xs text-gray-500">{fp.message}</p>}
                           </div>
                         )}
                       </div>
@@ -896,6 +812,6 @@ export default function Home() {
       <footer className="border-t border-gray-200 py-4 text-center text-xs text-gray-400">
         WikiMigrator - Marker + Martian + Notion API
       </footer>
-    </div>
+    </>
   );
 }

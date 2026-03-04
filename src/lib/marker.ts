@@ -3,7 +3,12 @@ import { promises as fs } from "fs";
 import path from "path";
 import type { ConvertLogger } from "./logger";
 
-const TMP_DIR = path.join(process.cwd(), "tmp");
+// Electron main process에서 setMarkerTmpDir()로 설정됨
+let TMP_DIR = path.join(process.cwd(), "tmp");
+
+export function setMarkerTmpDir(dir: string): void {
+  TMP_DIR = dir;
+}
 const TIMEOUT_MS = 5 * 60 * 1000; // 5분
 
 // brew 등 사용자 설치 경로가 누락되지 않도록 PATH를 보완

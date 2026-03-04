@@ -1,27 +1,41 @@
 {
   "name": "wikimigrator",
   "version": "1.0.0",
-  "description": "",
+  "description": "PDF to Notion converter desktop app",
+  "main": "dist-electron/electron/main.js",
   "scripts": {
-    "dev": "next dev --turbopack",
-    "build": "next build",
-    "start": "next start"
+    "dev:renderer": "vite",
+    "dev:main": "tsc -p electron/tsconfig.json --watch",
+    "dev": "concurrently \"npm run dev:renderer\" \"npm run dev:main\" \"wait-on http://localhost:5173 && electron .\"",
+    "build:renderer": "vite build",
+    "build:main": "tsc -p electron/tsconfig.json",
+    "build": "npm run build:renderer && npm run build:main",
+    "build:pymupdf": "bash scripts/build_pymupdf.sh",
+    "dist": "npm run build && electron-builder",
+    "start": "electron ."
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
     "@notionhq/client": "^5.9.0",
-    "@tailwindcss/postcss": "^4.2.1",
     "@tryfabric/martian": "^1.2.4",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "react-router-dom": "^7.6.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.2.1",
     "@types/node": "^25.3.0",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
-    "next": "^16.1.6",
-    "postcss": "^8.5.6",
-    "react": "^19.2.4",
-    "react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^4.5.2",
+    "concurrently": "^9.1.2",
+    "electron": "^36.3.1",
+    "electron-builder": "^26.0.12",
     "tailwindcss": "^4.2.1",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vite": "^6.3.5",
+    "wait-on": "^8.0.3"
   }
 }

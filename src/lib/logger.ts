@@ -1,7 +1,12 @@
 import { promises as fs } from "fs";
 import path from "path";
 
-const LOG_DIR = path.join(process.cwd(), "logs");
+// Electron main process에서 getAppPaths()로 설정됨
+let LOG_DIR = path.join(process.cwd(), "logs");
+
+export function setLogDir(dir: string): void {
+  LOG_DIR = dir;
+}
 
 export class ConvertLogger {
   private lines: string[] = [];

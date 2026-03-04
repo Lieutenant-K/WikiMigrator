@@ -1,0 +1,27 @@
+appId: com.wikimigrator.app
+productName: WikiMigrator
+directories:
+  buildResources: resources
+  output: release
+files:
+  - dist-electron/**/*
+  - dist-renderer/**/*
+mac:
+  category: public.app-category.productivity
+  icon: resources/icon.icns
+  identity: null
+  target:
+    - target: dmg
+      arch:
+        - arm64
+dmg:
+  contents:
+    - x: 130
+      y: 220
+    - x: 410
+      y: 220
+      type: link
+      path: /Applications
+extraResources:
+  - from: resources/pymupdf-tools
+    to: pymupdf-tools
