@@ -7,6 +7,13 @@ export interface ConvertParams {
   fileBuffers: Array<{ name: string; buffer: ArrayBuffer; size: number }>;
 }
 
+export interface MarkerSetupEvent {
+  phase: string;
+  message: string;
+  progress?: number;
+  error?: string;
+}
+
 export interface ElectronAPI {
   getPages: (token: string) => Promise<{ pages: Array<{ id: string; title: string; icon: string | null }> }>;
   listFiles: (type: string) => Promise<{ files: Array<{ name: string; type: string; size: number; modifiedAt: string; path: string }>; total: number }>;
@@ -14,8 +21,9 @@ export interface ElectronAPI {
   downloadFile: (dir: string, name: string) => Promise<{ buffer: ArrayBuffer; fileName: string } | null>;
   convert: (params: ConvertParams) => Promise<void>;
   onConvertEvent: (callback: (data: unknown) => void) => () => void;
-  checkMarker: () => Promise<{ installed: boolean; path?: string }>;
-  installMarker: () => Promise<{ success: boolean; error?: string }>;
+  checkMarker: () => Promise<{ installed: boolean; path?: string; state?: string }>;
+  installMarker: () => Promise<{ success: boolean; error?: string; markerSinglePath?: string }>;
+  onMarkerSetupEvent: (callback: (data: MarkerSetupEvent) => void) => () => void;
   selectFiles: () => Promise<Array<{ name: string; buffer: ArrayBuffer; size: number }> | null>;
 }
 
@@ -41,6 +49,14 @@ contextBridge.exposeInMainWorld("electronAPI", {
   checkMarker: () => ipcRenderer.invoke("check-marker"),
 
   installMarker: () => ipcRenderer.invoke("install-marker"),
+
+  onMarkerSetupEvent: (callback: (data: MarkerSetupEvent) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: MarkerSetupEvent) => callback(data);
+    ipcRenderer.on("marker-setup-event", handler);
+    return () => {
+      ipcRenderer.removeListener("marker-setup-event", handler);
+    };
+  },
 
   selectFiles: () => ipcRenderer.invoke("select-files"),
 } satisfies ElectronAPI);

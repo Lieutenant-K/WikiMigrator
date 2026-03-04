@@ -22,34 +22,11 @@ Notion 페이지 생성
 2. `.dmg`를 열고 WikiMigrator를 **Applications** 폴더에 드래그합니다.
 3. 최초 실행 시 "확인되지 않은 개발자" 경고가 뜰 수 있습니다:
    - **시스템 설정 → 개인정보 보호 및 보안** 하단에서 "확인 없이 열기"를 클릭합니다.
+4. 앱 첫 실행 시 **"초기 설정 필요"** 배너가 표시됩니다. **"설정 시작"** 버튼을 클릭하면 PDF 변환에 필요한 환경이 자동으로 구성됩니다. (최초 1회, 인터넷 연결 필요, 1~3분 소요)
+
+> **Python이나 pip를 별도로 설치할 필요 없습니다.** 앱에 standalone Python이 내장되어 있으며, 첫 실행 시 자동으로 marker-pdf를 설치합니다.
 
 ## 사전 준비
-
-### Python & marker-pdf
-
-PDF 변환을 위해 Python 환경에 `marker-pdf`가 설치되어 있어야 합니다.
-
-```bash
-pip install marker-pdf
-```
-
-설치 후 `marker_single` 명령어가 PATH에 있는지 확인합니다.
-
-```bash
-marker_single --help
-```
-
-> GPU가 있으면 변환 속도가 크게 향상됩니다. CPU만으로도 동작합니다.
-
-### PyMuPDF (개발자 로컬 실행 시만 필요)
-
-PDF에서 원본 이미지를 추출하기 위해 PyMuPDF가 필요합니다.
-
-```bash
-pip install pymupdf
-```
-
-> 배포용 `.dmg`에는 PyMuPDF가 번들로 포함되어 있으므로, 일반 사용자는 별도 설치가 필요 없습니다.
 
 ### Notion Integration 생성
 
@@ -99,11 +76,17 @@ npm run dev
 | `npm run dev` | 개발 모드 (Vite + Electron 동시 실행) |
 | `npm run build` | 프로덕션 빌드 (Renderer + Main) |
 | `npm run dist` | `.dmg` 패키지 빌드 |
+| `npm run dist:full` | Standalone Python + PyMuPDF + `.dmg` 전체 빌드 |
 | `npm run build:pymupdf` | PyMuPDF 바이너리 번들 빌드 |
+| `npm run build:python` | Standalone Python 다운로드 |
 
 ### .dmg 빌드
 
 ```bash
+# 전체 빌드 (Standalone Python + PyMuPDF + DMG)
+npm run dist:full
+
+# 이미 리소스가 빌드되어 있으면
 npm run dist
 ```
 
@@ -117,7 +100,8 @@ WikiMigrator/
 │   ├── main.ts                  # 앱 진입점, BrowserWindow 생성
 │   ├── preload.ts               # contextBridge API 노출
 │   ├── ipc-handlers.ts          # IPC 핸들러 (변환, Notion API 등)
-│   └── app-paths.ts             # 앱 경로 유틸리티
+│   ├── app-paths.ts             # 앱 경로 유틸리티
+│   └── marker-env.ts            # Marker venv 관리 (생성, 설치, 검증)
 ├── src/                         # Renderer 프로세스 (React)
 │   ├── App.tsx                  # 라우팅 설정
 │   ├── main.tsx                 # React 엔트리포인트
@@ -139,12 +123,14 @@ WikiMigrator/
 ├── scripts/
 │   ├── pymupdf_cli.py           # PyMuPDF CLI (이미지 추출)
 │   ├── build_pymupdf.sh         # PyMuPDF 바이너리 빌드 스크립트
+│   ├── download_python.sh       # Standalone Python 다운로드 스크립트
 │   ├── extract_images.py        # 이미지 추출 스크립트
 │   ├── extract_bullets.py       # 불릿 추출 스크립트
 │   └── extract_table_links.py   # 테이블 링크 추출 스크립트
 ├── resources/
 │   ├── icon.icns                # 앱 아이콘
-│   └── entitlements.mac.plist   # macOS 엔타이틀먼트
+│   ├── entitlements.mac.plist   # macOS 엔타이틀먼트
+│   └── python/                  # Standalone Python (빌드 시 생성)
 ├── electron-builder.yml         # Electron Builder 설정
 ├── vite.config.ts               # Vite 설정
 ├── tsconfig.json                # TypeScript 설정

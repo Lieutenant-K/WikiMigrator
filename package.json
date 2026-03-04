@@ -11,7 +11,9 @@
     "build:main": "tsc -p electron/tsconfig.json",
     "build": "npm run build:renderer && npm run build:main",
     "build:pymupdf": "bash scripts/build_pymupdf.sh",
+    "build:python": "bash scripts/download_python.sh",
     "dist": "npm run build && electron-builder",
+    "dist:full": "npm run build:python && npm run build:pymupdf && npm run dist",
     "start": "electron ."
   },
   "keywords": ["pdf", "notion", "converter", "electron", "macos"],

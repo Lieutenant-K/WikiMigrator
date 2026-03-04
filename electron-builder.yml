@@ -27,3 +27,5 @@ dmg:
 extraResources:
   - from: resources/pymupdf-tools
     to: pymupdf-tools
+  - from: resources/python
+    to: python

@@ -4,10 +4,11 @@ import { execFile } from "child_process";
 import path from "path";
 import { getAppPaths } from "./app-paths";
 import { getMainWindow, showNotification, setDockProgress } from "./main";
+import { checkMarkerEnv, setupMarkerEnv } from "./marker-env";
 
 // lib 모듈 import
 import { setLogDir, ConvertLogger } from "../src/lib/logger";
-import { setMarkerTmpDir, convertPdfToMarkdown, cleanupTempFiles } from "../src/lib/marker";
+import { setMarkerTmpDir, setMarkerPaths, convertPdfToMarkdown, cleanupTempFiles } from "../src/lib/marker";
 import { setImageExtractorPaths, extractImagesWithPyMuPDF, insertImageReferences, stripPageSeparators } from "../src/lib/image-extractor";
 import { setTableLinkPaths, extractTableLinksFromPDF, injectTableLinks } from "../src/lib/table-link-injector";
 import { setBulletRestorerPaths, extractBulletsFromPDF, restoreBulletMarkers } from "../src/lib/bullet-restorer";
@@ -21,17 +22,6 @@ import {
   extractTitleFromMarkdown,
   replaceImageBlocks,
 } from "../src/lib/converter";
-
-// 확장 PATH (brew, pyenv 등)
-const EXTENDED_PATH = [
-  "/opt/homebrew/bin",
-  "/usr/local/bin",
-  `${process.env.HOME}/.local/bin`,
-  `${process.env.HOME}/Library/Python/3.11/bin`,
-  `${process.env.HOME}/Library/Python/3.12/bin`,
-  `${process.env.HOME}/Library/Python/3.13/bin`,
-  process.env.PATH,
-].join(":");
 
 const BASE_PIPELINE_STEPS = [
   "PDF 파일 저장",
@@ -65,6 +55,16 @@ function initLibPaths(): void {
   setFileBrowserDirs({
     logs: paths.logs,
     markdown: paths.outputMarkdown,
+  });
+
+  // Marker: venv가 준비되어 있으면 venv 내 경로 사용
+  checkMarkerEnv().then((status) => {
+    if (status.state === "ready") {
+      setMarkerPaths({
+        markerSinglePath: status.markerSinglePath,
+        markerEnvPath: paths.markerEnv,
+      });
+    }
   });
 
   // PyMuPDF: 프로덕션에서는 번들 바이너리, 개발 모드에서는 Python 스크립트
@@ -187,44 +187,29 @@ export function registerIpcHandlers(): void {
 
   // --- check-marker ---
   ipcMain.handle("check-marker", async () => {
-    return new Promise<{ installed: boolean; path?: string }>((resolve) => {
-      execFile("which", ["marker_single"], {
-        env: { ...process.env, PATH: EXTENDED_PATH },
-      }, (error, stdout) => {
-        if (error) {
-          resolve({ installed: false });
-        } else {
-          resolve({ installed: true, path: stdout.trim() });
-        }
-      });
-    });
+    const status = await checkMarkerEnv();
+    if (status.state === "ready") {
+      return { installed: true, path: status.markerSinglePath };
+    }
+    return { installed: false, state: status.state };
   });
 
   // --- install-marker ---
   ipcMain.handle("install-marker", async () => {
-    // pipx를 먼저 시도, 실패하면 pip install --user
-    return new Promise<{ success: boolean; error?: string }>((resolve) => {
-      execFile("pipx", ["install", "marker-pdf"], {
-        env: { ...process.env, PATH: EXTENDED_PATH },
-        timeout: 5 * 60 * 1000,
-      }, (pipxErr) => {
-        if (!pipxErr) {
-          resolve({ success: true });
-          return;
-        }
-
-        execFile("pip3", ["install", "--user", "marker-pdf"], {
-          env: { ...process.env, PATH: EXTENDED_PATH },
-          timeout: 5 * 60 * 1000,
-        }, (pipErr, _stdout, stderr) => {
-          if (pipErr) {
-            resolve({ success: false, error: stderr || pipErr.message });
-          } else {
-            resolve({ success: true });
-          }
+    try {
+      const result = await setupMarkerEnv();
+      if (result.success && result.markerSinglePath) {
+        // 설치 직후 marker 경로를 즉시 갱신
+        setMarkerPaths({
+          markerSinglePath: result.markerSinglePath,
+          markerEnvPath: getAppPaths().markerEnv,
         });
-      });
-    });
+      }
+      return result;
+    } catch (err) {
+      const error = err instanceof Error ? err.message : "설치 실패";
+      return { success: false, error };
+    }
   });
 
   // --- convert (메인 변환 파이프라인) ---

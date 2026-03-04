@@ -80,7 +80,9 @@ export default function Home() {
   const convertedFilesRef = useRef<SelectedFile[]>([]);
   const [retryingIndex, setRetryingIndex] = useState<number | null>(null);
   const [attachPdf, setAttachPdf] = useState(false);
-  const [markerStatus, setMarkerStatus] = useState<"checking" | "installed" | "missing" | "installing">("checking");
+  const [markerStatus, setMarkerStatus] = useState<"checking" | "installed" | "missing" | "installing" | "error">("checking");
+  const [setupProgress, setSetupProgress] = useState<{ phase: string; message: string; progress: number } | null>(null);
+  const [setupError, setSetupError] = useState("");
 
   // Marker 설치 상태 확인
   useEffect(() => {
@@ -91,17 +93,39 @@ export default function Home() {
 
   const handleInstallMarker = async () => {
     setMarkerStatus("installing");
+    setSetupProgress({ phase: "start", message: "준비 중...", progress: 0 });
+    setSetupError("");
+
+    // 진행률 이벤트 리스너 등록
+    const cleanup = window.electronAPI.onMarkerSetupEvent((data) => {
+      if (data.phase === "error") {
+        setSetupError(data.error || "알 수 없는 오류");
+        setMarkerStatus("error");
+      } else if (data.phase === "done") {
+        setSetupProgress({ phase: "done", message: "설치 완료!", progress: 100 });
+      } else {
+        setSetupProgress({
+          phase: data.phase,
+          message: data.message,
+          progress: data.progress || 0,
+        });
+      }
+    });
+
     try {
       const result = await window.electronAPI.installMarker();
       if (result.success) {
         setMarkerStatus("installed");
       } else {
-        setError(`Marker 설치 실패: ${result.error}`);
-        setMarkerStatus("missing");
+        setSetupError(result.error || "설치 실패");
+        setMarkerStatus("error");
       }
     } catch {
-      setError("Marker 설치 중 오류가 발생했습니다.");
-      setMarkerStatus("missing");
+      setSetupError("설치 중 예상치 못한 오류가 발생했습니다.");
+      setMarkerStatus("error");
+    } finally {
+      cleanup();
+      setSetupProgress(null);
     }
   };
 
@@ -473,21 +497,42 @@ export default function Home() {
           {markerStatus === "missing" && (
             <div className="bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3 rounded-lg flex items-center justify-between">
               <div>
-                <p className="font-medium">Marker가 설치되지 않았습니다</p>
-                <p className="text-sm text-amber-600">PDF 변환에 필요한 marker-pdf 패키지를 설치해주세요.</p>
+                <p className="font-medium">초기 설정이 필요합니다</p>
+                <p className="text-sm text-amber-600">PDF 변환에 필요한 환경을 자동으로 구성합니다. (최초 1회, 1~3분 소요)</p>
               </div>
               <button
                 onClick={handleInstallMarker}
                 className="bg-amber-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-amber-700 transition whitespace-nowrap"
               >
-                자동 설치
+                설정 시작
               </button>
             </div>
           )}
-          {markerStatus === "installing" && (
-            <div className="bg-blue-50 border border-blue-200 text-blue-800 px-4 py-3 rounded-lg flex items-center gap-3">
-              <span className="inline-block w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
-              <span>Marker 설치 중... (시간이 걸릴 수 있습니다)</span>
+          {markerStatus === "installing" && setupProgress && (
+            <div className="bg-blue-50 border border-blue-200 text-blue-800 px-4 py-3 rounded-lg space-y-2">
+              <div className="flex items-center gap-3">
+                <span className="inline-block w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+                <span className="font-medium">환경 구성 중...</span>
+              </div>
+              <div className="w-full bg-blue-200 rounded-full h-2">
+                <div
+                  className="bg-blue-600 h-2 rounded-full transition-all duration-300"
+                  style={{ width: `${setupProgress.progress}%` }}
+                />
+              </div>
+              <p className="text-xs text-blue-600 truncate">{setupProgress.message}</p>
+            </div>
+          )}
+          {markerStatus === "error" && (
+            <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg">
+              <p className="font-medium">환경 설정 실패</p>
+              <p className="text-sm mt-1">{setupError}</p>
+              <button
+                onClick={handleInstallMarker}
+                className="mt-2 text-sm underline hover:text-red-800"
+              >
+                다시 시도
+              </button>
             </div>
           )}
 

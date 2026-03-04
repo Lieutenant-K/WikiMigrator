@@ -23,6 +23,9 @@ tsconfig.tsbuildinfo
 resources/pymupdf-tools
 *.spec
 
+# Standalone Python
+resources/python/
+
 # claude
 .claude/
 

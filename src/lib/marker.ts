@@ -6,17 +6,27 @@ import type { ConvertLogger } from "./logger";
 // Electron main process에서 setMarkerTmpDir()로 설정됨
 let TMP_DIR = path.join(process.cwd(), "tmp");
 
+// marker_single 실행 경로 (venv 내 절대 경로 또는 시스템 PATH)
+let MARKER_SINGLE_PATH = "marker_single";
+let MARKER_ENV_PATH = "";
+
 export function setMarkerTmpDir(dir: string): void {
   TMP_DIR = dir;
 }
-const TIMEOUT_MS = 5 * 60 * 1000; // 5분
 
-// brew 등 사용자 설치 경로가 누락되지 않도록 PATH를 보완
-const EXEC_PATH = [
-  "/opt/homebrew/bin",
-  "/usr/local/bin",
-  process.env.PATH,
-].join(":");
+/**
+ * marker_single 실행 경로를 설정한다.
+ * venv 내 절대 경로를 사용하면 시스템 PATH에 의존하지 않는다.
+ */
+export function setMarkerPaths(opts: {
+  markerSinglePath: string;
+  markerEnvPath: string;
+}): void {
+  MARKER_SINGLE_PATH = opts.markerSinglePath;
+  MARKER_ENV_PATH = opts.markerEnvPath;
+}
+
+const TIMEOUT_MS = 5 * 60 * 1000; // 5분
 
 export interface MarkerResult {
   markdown: string;
@@ -39,20 +49,33 @@ export async function convertPdfToMarkdown(
   log.section("PDF → Markdown 변환 (Marker)");
   log.info(`입력 PDF: ${pdfPath}`);
   log.info(`출력 디렉토리: ${outputDir}`);
-  log.info(`명령어: marker_single ${pdfPath} --output_format markdown --output_dir ${outputDir} --disable_image_extraction --disable_ocr --paginate_output`);
+  log.info(`marker_single 경로: ${MARKER_SINGLE_PATH}`);
+
+  const args = [
+    pdfPath,
+    "--output_format", "markdown",
+    "--output_dir", outputDir,
+    "--disable_image_extraction",
+    "--disable_ocr",
+    "--paginate_output",
+  ];
+  log.info(`명령어: ${MARKER_SINGLE_PATH} ${args.join(" ")}`);
+
+  // venv 환경이 설정되어 있으면 해당 PATH를 사용
+  const execEnv: Record<string, string> = { ...process.env } as Record<string, string>;
+  if (MARKER_ENV_PATH) {
+    execEnv.PATH = `${path.join(MARKER_ENV_PATH, "bin")}:${execEnv.PATH || ""}`;
+    execEnv.VIRTUAL_ENV = MARKER_ENV_PATH;
+  } else {
+    // fallback: brew 등 사용자 설치 경로 보완
+    execEnv.PATH = ["/opt/homebrew/bin", "/usr/local/bin", execEnv.PATH].join(":");
+  }
 
   return new Promise((resolve, reject) => {
     execFile(
-      "marker_single",
-      [
-        pdfPath,
-        "--output_format", "markdown",
-        "--output_dir", outputDir,
-        "--disable_image_extraction",
-        "--disable_ocr",
-        "--paginate_output",
-      ],
-      { timeout: TIMEOUT_MS, env: { ...process.env, PATH: EXEC_PATH} },
+      MARKER_SINGLE_PATH,
+      args,
+      { timeout: TIMEOUT_MS, env: execEnv },
       async (error, stdout, stderr) => {
         if (error) {
           log.error(`Marker 실행 실패: ${error.message}`);

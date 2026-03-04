@@ -15,6 +15,10 @@ export interface AppPaths {
   pymupdfTools: string;
   /** 번들된 scripts 디렉토리 (개발 모드) */
   scripts: string;
+  /** 번들된 standalone Python 경로 (resources/python) */
+  bundledPython: string;
+  /** marker-pdf venv 경로 (~/Library/Application Support/WikiMigrator/marker-env) */
+  markerEnv: string;
 }
 
 let cachedPaths: AppPaths | null = null;
@@ -27,15 +31,18 @@ export function getAppPaths(): AppPaths {
 
   let pymupdfTools: string;
   let scripts: string;
+  let bundledPython: string;
 
   if (isDev) {
     // 개발 모드: 프로젝트 루트 기준
     pymupdfTools = path.join(app.getAppPath(), "resources", "pymupdf-tools");
     scripts = path.join(app.getAppPath(), "scripts");
+    bundledPython = path.join(app.getAppPath(), "resources", "python");
   } else {
     // 프로덕션: extraResources 경로
     pymupdfTools = path.join(process.resourcesPath, "pymupdf-tools");
     scripts = path.join(process.resourcesPath, "scripts");
+    bundledPython = path.join(process.resourcesPath, "python");
   }
 
   cachedPaths = {
@@ -45,6 +52,8 @@ export function getAppPaths(): AppPaths {
     outputMarkdown: path.join(appData, "output_markdown"),
     pymupdfTools,
     scripts,
+    bundledPython,
+    markerEnv: path.join(appData, "marker-env"),
   };
 
   return cachedPaths;
