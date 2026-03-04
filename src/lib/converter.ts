@@ -423,6 +423,101 @@ export function sanitizeInternalLinks(
   return result;
 }
 
+/**
+ * Notion API는 table_row의 각 셀(cell)에 최대 100개의 rich text 요소만 허용한다.
+ * Martian은 텍스트를 매우 잘게 쪼개는 경향이 있어, 긴 테이블 셀에서 이 제한을 초과할 수 있다.
+ *
+ * 이 함수는 인접한 rich text 요소들 중 annotations와 link가 동일한 것들을
+ * 하나로 병합하여 요소 수를 줄인다. 콘텐츠는 일절 손실되지 않는다.
+ */
+const NOTION_MAX_RICH_TEXT_PER_CELL = 100;
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type RichTextItem = Record<string, any>;
+
+function richTextMergeable(a: RichTextItem, b: RichTextItem): boolean {
+  if (a.type !== "text" || b.type !== "text") return false;
+
+  // link 비교 (둘 다 null이거나 같은 URL)
+  const aLink = a.text?.link?.url ?? null;
+  const bLink = b.text?.link?.url ?? null;
+  if (aLink !== bLink) return false;
+
+  // annotations 비교
+  const aAnn = a.annotations ?? {};
+  const bAnn = b.annotations ?? {};
+  for (const key of ["bold", "italic", "strikethrough", "underline", "code", "color"] as const) {
+    const aVal = aAnn[key] ?? (key === "color" ? "default" : false);
+    const bVal = bAnn[key] ?? (key === "color" ? "default" : false);
+    if (aVal !== bVal) return false;
+  }
+
+  return true;
+}
+
+const NOTION_MAX_TEXT_CONTENT_LENGTH = 2000;
+
+function compactRichTextArray(items: RichTextItem[]): RichTextItem[] {
+  if (items.length <= 1) return items;
+
+  const result: RichTextItem[] = [items[0]];
+
+  for (let i = 1; i < items.length; i++) {
+    const prev = result[result.length - 1];
+    const curr = items[i];
+    const prevLen = (prev.text?.content ?? "").length;
+    const currLen = (curr.text?.content ?? "").length;
+
+    if (richTextMergeable(prev, curr) && prevLen + currLen <= NOTION_MAX_TEXT_CONTENT_LENGTH) {
+      // 텍스트 내용만 이어붙임 — 서식·링크는 동일하므로 보존됨
+      prev.text = {
+        ...prev.text,
+        content: (prev.text?.content ?? "") + (curr.text?.content ?? ""),
+      };
+    } else {
+      result.push(curr);
+    }
+  }
+
+  return result;
+}
+
+function compactTableCells(blocks: AnyBlock[], log: ConvertLogger): void {
+  let compactedCells = 0;
+
+  for (const block of blocks) {
+    if (block.type === "table" && block.table?.children) {
+      for (const row of block.table.children) {
+        if (row.type !== "table_row" || !row.table_row?.cells) continue;
+
+        for (let ci = 0; ci < row.table_row.cells.length; ci++) {
+          const cell: RichTextItem[] = row.table_row.cells[ci];
+          if (cell.length <= NOTION_MAX_RICH_TEXT_PER_CELL) continue;
+
+          const before = cell.length;
+          row.table_row.cells[ci] = compactRichTextArray(cell);
+          const after = row.table_row.cells[ci].length;
+
+          if (after < before) {
+            compactedCells++;
+            log.info(`  테이블 셀 rich text 병합: ${before}개 → ${after}개`);
+          }
+        }
+      }
+    }
+
+    // 재귀: children이 있는 블록도 처리
+    const children = getChildren(block);
+    if (children && children.length > 0) {
+      compactTableCells(children, log);
+    }
+  }
+
+  if (compactedCells > 0) {
+    log.info(`테이블 셀 rich text 병합 완료: ${compactedCells}개 셀 최적화`);
+  }
+}
+
 export function convertMarkdownToNotionBlocks(
   markdown: string,
   log: ConvertLogger
@@ -437,6 +532,9 @@ export function convertMarkdownToNotionBlocks(
   });
 
   const anyBlocks = blocks as AnyBlock[];
+
+  // 테이블 셀의 rich text 요소가 Notion 제한(100개)을 초과하지 않도록 병합
+  compactTableCells(anyBlocks, log);
 
   log.info(`Martian 변환 결과: 최상위 블록 ${anyBlocks.length}개`);
 
