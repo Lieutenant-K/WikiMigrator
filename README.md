@@ -1,6 +1,6 @@
 # WikiMigrator
 
-PDF 파일을 Notion 페이지로 변환하는 웹 서비스입니다.
+PDF 파일을 Notion 페이지로 변환하는 macOS 데스크톱 앱입니다.
 
 [Marker](https://github.com/datalab-to/marker)로 PDF를 Markdown으로 변환한 뒤, [Martian](https://github.com/tryfabric/martian)으로 Notion 블록으로 변환하여 Notion API를 통해 페이지를 생성합니다.
 
@@ -16,25 +16,16 @@ Notion Block 배열
 Notion 페이지 생성
 ```
 
-## 기술 스택
+## 설치 (일반 사용자)
 
-- **Next.js 16** (App Router, Turbopack)
-- **marker-pdf** — PDF → Markdown 변환 (Python CLI)
-- **@tryfabric/martian** — Markdown → Notion Block 변환
-- **@notionhq/client** — Notion API 클라이언트
-- **Tailwind CSS v4** — UI 스타일링
+1. [GitHub Releases](https://github.com/Lieutenant-K/WikiMigrator/releases)에서 최신 `.dmg` 파일을 다운로드합니다.
+2. `.dmg`를 열고 WikiMigrator를 **Applications** 폴더에 드래그합니다.
+3. 최초 실행 시 "확인되지 않은 개발자" 경고가 뜰 수 있습니다:
+   - **시스템 설정 → 개인정보 보호 및 보안** 하단에서 "확인 없이 열기"를 클릭합니다.
 
 ## 사전 준비
 
-### 1. Node.js
-
-Node.js 18 이상이 필요합니다.
-
-```bash
-node -v  # v18 이상 확인
-```
-
-### 2. Python & Marker
+### Python & marker-pdf
 
 PDF 변환을 위해 Python 환경에 `marker-pdf`가 설치되어 있어야 합니다.
 
@@ -50,7 +41,7 @@ marker_single --help
 
 > GPU가 있으면 변환 속도가 크게 향상됩니다. CPU만으로도 동작합니다.
 
-### 3. PyMuPDF (이미지 추출)
+### PyMuPDF (개발자 로컬 실행 시만 필요)
 
 PDF에서 원본 이미지를 추출하기 위해 PyMuPDF가 필요합니다.
 
@@ -58,9 +49,9 @@ PDF에서 원본 이미지를 추출하기 위해 PyMuPDF가 필요합니다.
 pip install pymupdf
 ```
 
-> Marker와 동일한 Python 환경에 설치하면 됩니다.
+> 배포용 `.dmg`에는 PyMuPDF가 번들로 포함되어 있으므로, 일반 사용자는 별도 설치가 필요 없습니다.
 
-### 4. Notion Integration 생성
+### Notion Integration 생성
 
 1. [notion.so/my-integrations](https://www.notion.so/my-integrations)에 접속합니다.
 2. **새 Integration**을 생성합니다.
@@ -69,30 +60,11 @@ pip install pymupdf
 
 > Integration이 연결된 페이지만 앱에서 조회/생성할 수 있습니다.
 
-## 설치 및 실행
-
-```bash
-# 저장소 클론
-git clone <repository-url>
-cd WikiMigrator
-
-# 의존성 설치
-npm install
-
-# 개발 서버 실행
-npm run dev
-```
-
-브라우저에서 [http://localhost:3000](http://localhost:3000)에 접속합니다.
-
 ## 사용 방법
 
 ### Step 1 — Notion 토큰 입력
 
 앱 화면에서 앞서 복사한 Internal Integration Token을 붙여넣고 **연결하기**를 클릭합니다.
-
-- 토큰은 브라우저의 `localStorage`에만 저장되며, 서버에 영구 저장되지 않습니다.
-- 연결 시 토큰의 유효성을 자동으로 검증합니다.
 
 ### Step 2 — 대상 페이지 선택
 
@@ -103,64 +75,94 @@ Integration이 연결된 Notion 페이지 목록이 표시됩니다. 변환된 P
 PDF 파일을 드래그앤드롭하거나 클릭하여 선택한 뒤 **변환하기**를 클릭합니다.
 
 - 여러 파일을 동시에 업로드할 수 있습니다.
+- 변환 진행률이 실시간으로 표시됩니다.
 - 변환이 완료되면 각 파일별로 결과와 Notion 페이지 링크가 표시됩니다.
+
+## 개발 환경 설정 (개발자용)
+
+```bash
+# 저장소 클론
+git clone https://github.com/Lieutenant-K/WikiMigrator.git
+cd WikiMigrator
+
+# 의존성 설치
+npm install
+
+# 개발 서버 실행 (Vite + Electron 동시 기동)
+npm run dev
+```
+
+### 주요 npm 스크립트
+
+| 스크립트 | 설명 |
+|----------|------|
+| `npm run dev` | 개발 모드 (Vite + Electron 동시 실행) |
+| `npm run build` | 프로덕션 빌드 (Renderer + Main) |
+| `npm run dist` | `.dmg` 패키지 빌드 |
+| `npm run build:pymupdf` | PyMuPDF 바이너리 번들 빌드 |
+
+### .dmg 빌드
+
+```bash
+npm run dist
+```
+
+빌드된 `.dmg` 파일은 `release/` 디렉토리에 생성됩니다.
 
 ## 프로젝트 구조
 
 ```
 WikiMigrator/
-├── package.json
-├── tsconfig.json
-├── next.config.ts
-├── postcss.config.mjs
-├── src/
-│   ├── app/
-│   │   ├── globals.css                 # Tailwind CSS 임포트
-│   │   ├── layout.tsx                  # 루트 레이아웃
-│   │   ├── page.tsx                    # 메인 UI (토큰 입력, 업로드, 변환)
-│   │   └── api/
-│   │       ├── convert/route.ts        # PDF 변환 → Notion 페이지 생성 API
-│   │       └── pages/route.ts          # Notion 페이지 목록 조회 API
+├── electron/                    # Electron Main 프로세스
+│   ├── main.ts                  # 앱 진입점, BrowserWindow 생성
+│   ├── preload.ts               # contextBridge API 노출
+│   ├── ipc-handlers.ts          # IPC 핸들러 (변환, Notion API 등)
+│   └── app-paths.ts             # 앱 경로 유틸리티
+├── src/                         # Renderer 프로세스 (React)
+│   ├── App.tsx                  # 라우팅 설정
+│   ├── main.tsx                 # React 엔트리포인트
+│   ├── pages/
+│   │   ├── Home.tsx             # 메인 UI (토큰, 업로드, 변환)
+│   │   └── Files.tsx            # 로그·마크다운 파일 브라우저
+│   ├── components/
+│   │   └── FileViewer.tsx       # 파일 뷰어 컴포넌트
 │   └── lib/
-│       ├── marker.ts                   # marker_single CLI 래퍼
-│       ├── converter.ts                # Martian 변환 + 제목 추출
-│       └── notion.ts                   # Notion 클라이언트 및 페이지 생성
-└── tmp/                                # 변환 중 임시 파일 (자동 정리됨)
+│       ├── marker.ts            # marker_single CLI 래퍼
+│       ├── converter.ts         # Martian 변환 + 제목 추출
+│       ├── notion.ts            # Notion 클라이언트 및 페이지 생성
+│       ├── image-extractor.ts   # PyMuPDF 이미지 추출
+│       ├── image-uploader.ts    # Notion 이미지 업로드
+│       ├── bullet-restorer.ts   # 불릿 리스트 복원
+│       ├── table-link-injector.ts # 테이블 내 링크 복원
+│       ├── logger.ts            # 변환 로그 관리
+│       └── file-browser.ts      # 파일 탐색 유틸리티
+├── scripts/
+│   ├── pymupdf_cli.py           # PyMuPDF CLI (이미지 추출)
+│   ├── build_pymupdf.sh         # PyMuPDF 바이너리 빌드 스크립트
+│   ├── extract_images.py        # 이미지 추출 스크립트
+│   ├── extract_bullets.py       # 불릿 추출 스크립트
+│   └── extract_table_links.py   # 테이블 링크 추출 스크립트
+├── resources/
+│   ├── icon.icns                # 앱 아이콘
+│   └── entitlements.mac.plist   # macOS 엔타이틀먼트
+├── electron-builder.yml         # Electron Builder 설정
+├── vite.config.ts               # Vite 설정
+├── tsconfig.json                # TypeScript 설정
+└── package.json
 ```
 
-## API 엔드포인트
+## 기술 스택
 
-모든 API는 `Authorization: Bearer <token>` 헤더로 Notion 토큰을 전달받습니다.
-
-| 메서드 | 경로 | 설명 |
-|--------|------|------|
-| GET | `/api/pages` | 토큰에 연결된 Notion 페이지 목록 조회 |
-| POST | `/api/convert` | PDF 파일을 변환하여 Notion 페이지 생성 |
-
-### POST `/api/convert`
-
-**Content-Type:** `multipart/form-data`
-
-| 필드 | 타입 | 설명 |
-|------|------|------|
-| `parentPageId` | string | 하위 페이지가 생성될 상위 Notion 페이지 ID |
-| `files` | File[] | 변환할 PDF 파일 (복수 가능) |
-
-## 주요 동작 방식
-
-- **Marker CLI**: `marker_single` 명령어를 Node.js의 `child_process`로 실행합니다. 타임아웃은 5분입니다.
-- **블록 분할 전송**: Notion API는 한 번에 최대 100개의 블록만 허용하므로, 첫 100개는 `pages.create()`에 포함하고 나머지는 `blocks.children.append()`로 100개씩 추가합니다.
-- **임시 파일 관리**: 업로드된 PDF와 Marker 출력물은 `tmp/` 디렉토리에 저장되며, 변환 완료 후 자동으로 삭제됩니다.
-- **제목 추출**: Markdown의 첫 번째 `# 제목`을 Notion 페이지 제목으로 사용합니다. 없으면 파일명을 사용합니다.
-
-## 프로덕션 빌드
-
-```bash
-npm run build
-npm start
-```
+- **Electron** — macOS 데스크톱 앱 프레임워크
+- **Vite** — 빌드 도구 및 개발 서버
+- **React** — UI 프레임워크
+- **Tailwind CSS v4** — UI 스타일링
+- **marker-pdf** — PDF → Markdown 변환 (Python CLI)
+- **@tryfabric/martian** — Markdown → Notion Block 변환
+- **@notionhq/client** — Notion API 클라이언트
 
 ## 라이선스
 
-- **Marker**: 연구/개인 사용/소규모 스타트업(자금 또는 매출 $5M 이하) 무료. 상업적 사용 시 별도 라이선스 필요.
-- **Martian**: MIT 라이선스.
+이 프로젝트는 [MIT 라이선스](LICENSE)로 배포됩니다.
+
+**Marker 라이선스 주의:** 이 앱이 사용하는 [Marker](https://github.com/datalab-to/marker)는 연구/개인 사용/소규모 스타트업(자금 또는 매출 $5M 이하)에서 무료로 사용할 수 있습니다. 상업적 사용 시에는 Marker의 별도 상용 라이선스가 필요합니다.

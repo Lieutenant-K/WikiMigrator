@@ -26,5 +26,8 @@ resources/pymupdf-tools
 # claude
 .claude/
 
+# logs
+*.log
+
 # OS
 .DS_Store
