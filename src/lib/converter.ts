@@ -408,15 +408,27 @@ export function sanitizeInternalLinks(
     }
   );
 
+  // 1-2. [text](scheme://...) → text (커스텀 딥링크 스킴 제거)
+  //      Notion API는 http:// 와 https:// 만 유효한 URL로 인정한다.
+  //      csair://, pasta:// 같은 커스텀 스킴 링크를 plain text로 변환한다.
+  let customSchemeCount = 0;
+  result = result.replace(
+    /\[((?:[^\]\\]|\\.)+)\]\((?!https?:\/\/)[a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^)]*\)/g,
+    (_match, text: string) => {
+      customSchemeCount++;
+      return text;
+    }
+  );
+
   // 2. <span id="..."></span> → (제거)
   result = result.replace(/<span\s+id="[^"]*">\s*<\/span>/g, () => {
     spanCount++;
     return "";
   });
 
-  if (anchorLinkCount > 0 || spanCount > 0) {
+  if (anchorLinkCount > 0 || customSchemeCount > 0 || spanCount > 0) {
     log.info(
-      `내부 링크 정리: 앵커 링크 ${anchorLinkCount}개 → plain text, <span> 태그 ${spanCount}개 제거`
+      `내부 링크 정리: 앵커 링크 ${anchorLinkCount}개, 커스텀 스킴 ${customSchemeCount}개 → plain text, <span> 태그 ${spanCount}개 제거`
     );
   }
 
