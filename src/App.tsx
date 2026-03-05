@@ -1,4 +1,4 @@
-import { Routes, Route, Link, useLocation } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import Home from "./pages/Home";
 import Files from "./pages/Files";
 
@@ -39,11 +39,13 @@ export default function App() {
         </div>
       </header>
 
-      {/* Routes */}
-      <Routes>
-        <Route path="/" element={<Home />} />
-        <Route path="/files" element={<Files />} />
-      </Routes>
+      {/* 탭 전환 시 unmount 방지: CSS로 숨김 처리 */}
+      <div className="flex-1 flex flex-col" style={{ display: location.pathname === "/" ? undefined : "none" }}>
+        <Home />
+      </div>
+      <div className="flex-1 flex flex-col" style={{ display: location.pathname === "/files" ? undefined : "none" }}>
+        <Files />
+      </div>
     </div>
   );
 }
