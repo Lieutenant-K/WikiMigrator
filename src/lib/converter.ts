@@ -436,13 +436,48 @@ export function sanitizeInternalLinks(
 }
 
 /**
+ * PDF에서 추출된 마크다운에서 같은 URL을 가진 인접 링크 조각들을 하나로 병합한다.
+ *
+ * Marker는 PDF의 글자별 좌표 정보를 따라 하이퍼링크를 글자 단위로 쪼개는 경우가 있다.
+ * 예: `[h](url) [tt](url) [p](url)` → `[h tt p](url)`
+ *
+ * 이 조각들이 Martian을 거치면 각각 별도의 rich_text 요소가 되어
+ * Notion API의 블록당 100개 제한을 초과할 수 있다.
+ */
+function mergeFragmentedLinks(
+  markdown: string,
+  log: ConvertLogger
+): string {
+  let mergeCount = 0;
+  let result = markdown;
+  let prev = "";
+
+  while (result !== prev) {
+    prev = result;
+    result = result.replace(
+      /\[([^\]]*)\]\(([^)]+)\)([ \t]*)\[([^\]]*)\]\(\2\)/g,
+      (_match, text1: string, url: string, _space: string, text2: string) => {
+        mergeCount++;
+        return `[${text1}${text2}](${url})`;
+      }
+    );
+  }
+
+  if (mergeCount > 0) {
+    log.info(`링크 조각 병합: ${mergeCount}개 인접 링크를 통합`);
+  }
+
+  return result;
+}
+
+/**
  * Notion API는 table_row의 각 셀(cell)에 최대 100개의 rich text 요소만 허용한다.
  * Martian은 텍스트를 매우 잘게 쪼개는 경향이 있어, 긴 테이블 셀에서 이 제한을 초과할 수 있다.
  *
  * 이 함수는 인접한 rich text 요소들 중 annotations와 link가 동일한 것들을
  * 하나로 병합하여 요소 수를 줄인다. 콘텐츠는 일절 손실되지 않는다.
  */
-const NOTION_MAX_RICH_TEXT_PER_CELL = 100;
+const NOTION_MAX_RICH_TEXT = 100;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type RichTextItem = Record<string, any>;
@@ -504,7 +539,7 @@ function compactTableCells(blocks: AnyBlock[], log: ConvertLogger): void {
 
         for (let ci = 0; ci < row.table_row.cells.length; ci++) {
           const cell: RichTextItem[] = row.table_row.cells[ci];
-          if (cell.length <= NOTION_MAX_RICH_TEXT_PER_CELL) continue;
+          if (cell.length <= NOTION_MAX_RICH_TEXT) continue;
 
           const before = cell.length;
           row.table_row.cells[ci] = compactRichTextArray(cell);
@@ -530,6 +565,50 @@ function compactTableCells(blocks: AnyBlock[], log: ConvertLogger): void {
   }
 }
 
+/** rich_text를 가진 블록 타입 목록 */
+const RICH_TEXT_BLOCK_TYPES = [
+  "paragraph",
+  "heading_1",
+  "heading_2",
+  "heading_3",
+  "bulleted_list_item",
+  "numbered_list_item",
+  "to_do",
+  "toggle",
+  "quote",
+  "callout",
+] as const;
+
+function compactRichTextBlocks(blocks: AnyBlock[], log: ConvertLogger): void {
+  let compactedBlocks = 0;
+
+  for (const block of blocks) {
+    for (const type of RICH_TEXT_BLOCK_TYPES) {
+      const data = (block as Record<string, any>)[type];
+      if (block.type === type && data?.rich_text && data.rich_text.length > NOTION_MAX_RICH_TEXT) {
+        const before = data.rich_text.length;
+        data.rich_text = compactRichTextArray(data.rich_text);
+        const after = data.rich_text.length;
+        if (after < before) {
+          compactedBlocks++;
+          log.info(`  ${type} rich text 병합: ${before}개 → ${after}개`);
+        }
+        break;
+      }
+    }
+
+    // 재귀: children이 있는 블록도 처리
+    const children = getChildren(block);
+    if (children && children.length > 0) {
+      compactRichTextBlocks(children, log);
+    }
+  }
+
+  if (compactedBlocks > 0) {
+    log.info(`블록 rich text 병합 완료: ${compactedBlocks}개 블록 최적화`);
+  }
+}
+
 export function convertMarkdownToNotionBlocks(
   markdown: string,
   log: ConvertLogger
@@ -537,7 +616,8 @@ export function convertMarkdownToNotionBlocks(
   log.section("Markdown → Notion Blocks 변환 (Martian)");
 
   const sanitized = sanitizeInternalLinks(markdown, log);
-  const blocks = markdownToBlocks(flattenNestedOrderedLists(sanitized, log), {
+  const merged = mergeFragmentedLinks(sanitized, log);
+  const blocks = markdownToBlocks(flattenNestedOrderedLists(merged, log), {
     notionLimits: {
       truncate: true,
     },
@@ -545,8 +625,9 @@ export function convertMarkdownToNotionBlocks(
 
   const anyBlocks = blocks as AnyBlock[];
 
-  // 테이블 셀의 rich text 요소가 Notion 제한(100개)을 초과하지 않도록 병합
+  // rich text 요소가 Notion 제한(100개)을 초과하지 않도록 병합
   compactTableCells(anyBlocks, log);
+  compactRichTextBlocks(anyBlocks, log);
 
   log.info(`Martian 변환 결과: 최상위 블록 ${anyBlocks.length}개`);
 
