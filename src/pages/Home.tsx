@@ -9,7 +9,7 @@ interface NotionPage {
 
 interface ConvertResult {
   fileName: string;
-  status: "success" | "error";
+  status: "success" | "error" | "cancelled";
   pageId?: string;
   error?: string;
   logFile?: string;
@@ -30,13 +30,13 @@ type StreamEvent =
       type: "result";
       fileIndex: number;
       fileName: string;
-      status: "success" | "error";
+      status: "success" | "error" | "cancelled";
       pageId?: string;
       error?: string;
       logFile?: string;
       mdFile?: string;
     }
-  | { type: "done" };
+  | { type: "done"; cancelled?: boolean };
 
 interface FileProgress {
   fileName: string;
@@ -79,6 +79,7 @@ export default function Home() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const convertedFilesRef = useRef<SelectedFile[]>([]);
   const [retryingIndex, setRetryingIndex] = useState<number | null>(null);
+  const [cancelPending, setCancelPending] = useState(false);
   const [attachPdf, setAttachPdf] = useState(false);
   const [markerStatus, setMarkerStatus] = useState<"checking" | "installed" | "missing" | "installing" | "error">("checking");
   const [setupProgress, setSetupProgress] = useState<{ phase: string; message: string; progress: number } | null>(null);
@@ -257,10 +258,16 @@ export default function Home() {
     }
   };
 
+  const handleCancelConvert = async () => {
+    setCancelPending(true);
+    await window.electronAPI.cancelConvert();
+  };
+
   const handleConvert = async () => {
     if (!selectedPage || files.length === 0 || !token) return;
 
     setConverting(true);
+    setCancelPending(false);
     setResults([]);
     setError("");
     setViewingFile(null);
@@ -313,14 +320,17 @@ export default function Home() {
               next[event.fileIndex] = {
                 ...next[event.fileIndex],
                 stepIndex: next[event.fileIndex].totalSteps,
-                message: event.status === "success" ? "완료" : "실패",
+                message: event.status === "success" ? "완료" : event.status === "cancelled" ? "취소됨" : "실패",
                 result,
               };
             }
             return next;
           });
         } else if (event.type === "done") {
-          setFiles([]);
+          // 취소된 파일이 있으면 파일 목록 유지
+          if (!event.cancelled) {
+            setFiles([]);
+          }
         }
       });
     } catch {
@@ -713,21 +723,27 @@ export default function Home() {
                 </label>
               </div>
 
-              {/* Convert button */}
-              <button
-                onClick={handleConvert}
-                disabled={converting || retryingIndex !== null || !selectedPage || files.length === 0}
-                className="w-full bg-black text-white py-4 rounded-xl font-semibold text-lg hover:bg-gray-800 disabled:bg-gray-300 disabled:cursor-not-allowed transition"
-              >
-                {converting ? (
+              {/* Convert / Cancel button */}
+              {converting ? (
+                <button
+                  onClick={handleCancelConvert}
+                  disabled={cancelPending}
+                  className="w-full bg-red-600 text-white py-4 rounded-xl font-semibold text-lg hover:bg-red-700 disabled:bg-red-300 disabled:cursor-not-allowed transition"
+                >
                   <span className="flex items-center justify-center gap-2">
                     <span className="inline-block w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                    변환 중...
+                    {cancelPending ? "취소 요청 중..." : "변환 취소"}
                   </span>
-                ) : (
-                  `${files.length}개 파일 변환하기`
-                )}
-              </button>
+                </button>
+              ) : (
+                <button
+                  onClick={handleConvert}
+                  disabled={retryingIndex !== null || !selectedPage || files.length === 0}
+                  className="w-full bg-black text-white py-4 rounded-xl font-semibold text-lg hover:bg-gray-800 disabled:bg-gray-300 disabled:cursor-not-allowed transition"
+                >
+                  {`${files.length}개 파일 변환하기`}
+                </button>
+              )}
 
               {/* Progress + Results */}
               {fileProgresses.length > 0 && (
@@ -739,11 +755,11 @@ export default function Home() {
                         {fp.result ? (
                           <>
                             <div className={`flex items-center justify-between rounded-lg px-4 py-3 ${
-                              fp.result.status === "success" ? "bg-green-50" : "bg-red-50"
+                              fp.result.status === "success" ? "bg-green-50" : fp.result.status === "cancelled" ? "bg-yellow-50" : "bg-red-50"
                             }`}>
                               <div className="flex items-center gap-3">
-                                <span className={fp.result.status === "success" ? "text-green-500" : "text-red-500"}>
-                                  {fp.result.status === "success" ? "OK" : "ERR"}
+                                <span className={fp.result.status === "success" ? "text-green-500" : fp.result.status === "cancelled" ? "text-yellow-600" : "text-red-500"}>
+                                  {fp.result.status === "success" ? "OK" : fp.result.status === "cancelled" ? "취소" : "ERR"}
                                 </span>
                                 <span className="text-sm">{fp.result.fileName}</span>
                               </div>
@@ -756,6 +772,23 @@ export default function Home() {
                                 >
                                   Notion에서 보기
                                 </a>
+                              )}
+                              {fp.result.status === "cancelled" && (
+                                <div className="flex items-center gap-3">
+                                  {fp.result.logFile && (
+                                    <button
+                                      onClick={() => handleViewFile(index, "log")}
+                                      className={`text-xs px-2 py-1 rounded transition ${
+                                        viewingFile?.resultIndex === index && viewingFile?.type === "log"
+                                          ? "bg-amber-200 text-amber-800"
+                                          : "bg-amber-100 text-amber-700 hover:bg-amber-200"
+                                      }`}
+                                    >
+                                      로그 보기
+                                    </button>
+                                  )}
+                                  <span className="text-xs text-yellow-600">취소됨</span>
+                                </div>
                               )}
                               {fp.result.status === "error" && (
                                 <div className="flex items-center gap-3">

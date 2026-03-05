@@ -23,6 +23,17 @@ import {
   replaceImageBlocks,
 } from "../src/lib/converter";
 
+class CancelledError extends Error {
+  constructor() {
+    super("사용자에 의해 취소됨");
+    this.name = "CancelledError";
+  }
+}
+
+let cancelRequested = false;
+function resetCancel(): void { cancelRequested = false; }
+function isCancelled(): boolean { return cancelRequested; }
+
 const BASE_PIPELINE_STEPS = [
   "PDF 파일 저장",
   "PDF → Markdown 변환",
@@ -212,6 +223,12 @@ export function registerIpcHandlers(): void {
     }
   });
 
+  // --- cancel-convert ---
+  ipcMain.handle("cancel-convert", async () => {
+    cancelRequested = true;
+    return { success: true };
+  });
+
   // --- convert (메인 변환 파이프라인) ---
   ipcMain.handle("convert", async (_event, params: {
     accessToken: string;
@@ -231,14 +248,35 @@ export function registerIpcHandlers(): void {
     const TOTAL_STEPS = PIPELINE_STEPS.length;
 
     const savedFiles: string[] = [];
+    let cancelledDuringConvert = false;
 
     try {
       await fs.mkdir(paths.tmp, { recursive: true });
+      resetCancel();
 
       for (let fileIndex = 0; fileIndex < fileBuffers.length; fileIndex++) {
+        // 취소 요청 시 남은 파일 모두 cancelled 처리
+        if (isCancelled()) {
+          for (let i = fileIndex; i < fileBuffers.length; i++) {
+            sendEvent({
+              type: "result",
+              fileIndex: i,
+              fileName: fileBuffers[i].name,
+              status: "cancelled",
+              error: "취소됨",
+            });
+          }
+          cancelledDuringConvert = true;
+          break;
+        }
+
         const { name: fileName, buffer: rawBuffer, size } = fileBuffers[fileIndex];
         const buffer = Buffer.from(rawBuffer);
         const log = new ConvertLogger(fileName);
+
+        const checkCancel = () => {
+          if (isCancelled()) throw new CancelledError();
+        };
 
         const emitProgress = (stepIndex: number) => {
           // Dock 진행률 업데이트
@@ -289,10 +327,12 @@ export function registerIpcHandlers(): void {
           log.info(`임시 파일 저장: ${pdfPath}`);
 
           // 1. Marker로 PDF → Markdown 변환
+          checkCancel();
           emitProgress(1);
           const { markdown: paginatedMarkdown } = await convertPdfToMarkdown(pdfPath, log);
 
           // 2. PyMuPDF로 원본 이미지 추출
+          checkCancel();
           emitProgress(2);
           let imageMap = new Map<string, string>();
           let markdownWithImages = paginatedMarkdown;
@@ -318,6 +358,7 @@ export function registerIpcHandlers(): void {
           }
 
           // 3. 테이블 내 하이퍼링크 복원
+          checkCancel();
           emitProgress(3);
           try {
             const tableLinkData = await extractTableLinksFromPDF(pdfPath, log);
@@ -331,6 +372,7 @@ export function registerIpcHandlers(): void {
           }
 
           // 4. 벡터 불릿 복원
+          checkCancel();
           emitProgress(4);
           try {
             const bulletData = await extractBulletsFromPDF(pdfPath, log);
@@ -344,11 +386,13 @@ export function registerIpcHandlers(): void {
           }
 
           // 5. 코드 블록 들여쓰기 정규화
+          checkCancel();
           emitProgress(5);
           log.section("코드 블록 들여쓰기 정규화");
           const markdown = normalizeCodeBlockIndentation(markdownWithImages, log);
 
           // 6. 변환된 Markdown을 .md 파일로 저장
+          checkCancel();
           emitProgress(6);
           await fs.mkdir(paths.outputMarkdown, { recursive: true });
           const mdPath = path.join(paths.outputMarkdown, mdFileName);
@@ -357,6 +401,7 @@ export function registerIpcHandlers(): void {
           log.info(`마크다운 파일 저장: ${mdPath}`);
 
           // 7. 이미지를 Notion File Upload API로 업로드
+          checkCancel();
           emitProgress(7);
           let uploadMap = new Map<string, string>();
           if (imageMap.size > 0) {
@@ -370,6 +415,7 @@ export function registerIpcHandlers(): void {
           const { processed: processedMarkdown } = preprocessMarkdownImages(markdown, log);
 
           // 8. Martian으로 Markdown → Notion Blocks 변환
+          checkCancel();
           emitProgress(8);
           const { topLevelBlocks, deferredAppends } = convertMarkdownToNotionBlocks(processedMarkdown, log);
           const title = extractTitleFromMarkdown(markdown) || fileName.replace(".pdf", "");
@@ -385,6 +431,7 @@ export function registerIpcHandlers(): void {
 
           // 9. PDF 원본 업로드 (옵션)
           if (attachPdf) {
+            checkCancel();
             emitProgress(9);
             try {
               const pdfUploadId = await uploadPdfToNotion(client, buffer, fileName, log);
@@ -401,6 +448,7 @@ export function registerIpcHandlers(): void {
           }
 
           // 10 (또는 9). Notion 페이지 생성
+          checkCancel();
           emitProgress(TOTAL_STEPS - 1);
           const pageId = await createNotionPage(client, parentPageId, title, topLevelBlocks, deferredAppends, log);
 
@@ -415,34 +463,66 @@ export function registerIpcHandlers(): void {
             mdFile: mdFileName,
           });
         } catch (err) {
-          const message = err instanceof Error ? err.message : "변환 실패";
-          log.error(`최종 결과: 실패 → ${message}`);
-          if (err instanceof Error && err.stack) {
-            log.error(`스택 트레이스:\n${err.stack}`);
+          if (err instanceof CancelledError) {
+            cancelledDuringConvert = true;
+            log.warn("사용자에 의해 취소됨");
+            sendEvent({
+              type: "result",
+              fileIndex,
+              fileName,
+              status: "cancelled",
+              error: "취소됨",
+              logFile: log.logFileName,
+              mdFile: mdSaved ? mdFileName : undefined,
+            });
+            // 남은 파일들도 cancelled 처리
+            for (let i = fileIndex + 1; i < fileBuffers.length; i++) {
+              sendEvent({
+                type: "result",
+                fileIndex: i,
+                fileName: fileBuffers[i].name,
+                status: "cancelled",
+                error: "취소됨",
+              });
+            }
+          } else {
+            const message = err instanceof Error ? err.message : "변환 실패";
+            log.error(`최종 결과: 실패 → ${message}`);
+            if (err instanceof Error && err.stack) {
+              log.error(`스택 트레이스:\n${err.stack}`);
+            }
+            sendEvent({
+              type: "result",
+              fileIndex,
+              fileName,
+              status: "error",
+              error: message,
+              logFile: log.logFileName,
+              mdFile: mdSaved ? mdFileName : undefined,
+            });
           }
-          sendEvent({
-            type: "result",
-            fileIndex,
-            fileName,
-            status: "error",
-            error: message,
-            logFile: log.logFileName,
-            mdFile: mdSaved ? mdFileName : undefined,
-          });
         } finally {
-          const logPath = await log.flush();
+          const endMsg = isCancelled() ? "사용자에 의해 취소됨" : undefined;
+          const logPath = await log.flush(endMsg);
           console.log(`[WikiMigrator] 로그 저장: ${logPath}`);
         }
+
+        // CancelledError 발생 후 for 루프 탈출
+        if (isCancelled()) break;
       }
 
-      sendEvent({ type: "done" });
+      sendEvent({ type: "done", cancelled: cancelledDuringConvert });
 
       // Dock 진행률 리셋
       setDockProgress(-1);
 
       // 변환 완료 알림
-      const successCount = fileBuffers.length; // 대략적 — 실제 성공 수는 프론트엔드에서 추적
-      showNotification("WikiMigrator", `${successCount}개 파일 변환 완료`);
+      if (cancelledDuringConvert) {
+        showNotification("WikiMigrator", "변환이 취소되었습니다");
+      } else {
+        const successCount = fileBuffers.length;
+        showNotification("WikiMigrator", `${successCount}개 파일 변환 완료`);
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : "처리 중 오류 발생";
       sendEvent({ type: "result", fileIndex: -1, fileName: "", status: "error", error: message });

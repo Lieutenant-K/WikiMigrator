@@ -55,11 +55,12 @@ export class ConvertLogger {
   }
 
   /** 로그 파일을 디스크에 저장 */
-  async flush(): Promise<string> {
+  async flush(endMessage?: string): Promise<string> {
     const totalElapsed = ((Date.now() - this.startTime) / 1000).toFixed(2);
+    const msg = endMessage || "변환 완료";
     this.lines.push("");
     this.append("INFO", "========================================");
-    this.append("INFO", `변환 완료: 총 소요 시간 ${totalElapsed}s`);
+    this.append("INFO", `${msg}: 총 소요 시간 ${totalElapsed}s`);
     this.append("INFO", "========================================");
 
     await fs.mkdir(LOG_DIR, { recursive: true });

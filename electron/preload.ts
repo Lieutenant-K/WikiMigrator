@@ -24,6 +24,7 @@ export interface ElectronAPI {
   checkMarker: () => Promise<{ installed: boolean; path?: string; state?: string }>;
   installMarker: () => Promise<{ success: boolean; error?: string; markerSinglePath?: string }>;
   onMarkerSetupEvent: (callback: (data: MarkerSetupEvent) => void) => () => void;
+  cancelConvert: () => Promise<{ success: boolean }>;
   selectFiles: () => Promise<Array<{ name: string; buffer: ArrayBuffer; size: number }> | null>;
 }
 
@@ -57,6 +58,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
       ipcRenderer.removeListener("marker-setup-event", handler);
     };
   },
+
+  cancelConvert: () => ipcRenderer.invoke("cancel-convert"),
 
   selectFiles: () => ipcRenderer.invoke("select-files"),
 } satisfies ElectronAPI);
