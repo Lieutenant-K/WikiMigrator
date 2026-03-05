@@ -12,6 +12,8 @@ mac:
   hardenedRuntime: true
   entitlements: resources/entitlements.mac.plist
   entitlementsInherit: resources/entitlements.mac.plist
+  identity: "Yoonsu Kim (5QA7Y24MQ4)"
+  notarize: true
   target:
     - target: dmg
       arch:
